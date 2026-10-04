@@ -1,16 +1,17 @@
 --[[
-	BACKROOMS NOCLIP v4  |  LocalScript (client-sided)  |  Delta compatible
+	BACKROOMS NOCLIP v5  |  LocalScript (client-sided)  |  Delta compatible
 	- every 1s: 10% chance to noclip (only the part you stand on loses collision)
 	- walking into a wall: 50% chance (only that wall loses collision)
 	- VHS intro -> infinite backrooms, VHS camcorder overlay STAYS ON + found-footage camera bob
-	- zones: tight / normal / wide / huge halls, doors (model 9343670755) with "Open Door", windows
-	- MEGA ROOMS: very big liminal rooms with 2 or 8 floors, square holes, ramps, columns
-	- square holes (pits + ceiling shafts) in normal backrooms too
-	- THE POOLROOMS: INFINITE like the backrooms, small white square tiles with grout everywhere,
-	  soft dim light, swimmable teal water, pool halls, tiered atriums with a skylight, showers, flamingo floats
-	- no copied game objects inside the PoolRooms
-	- backrooms use NO fabric material except the carpet
-	- Roblox's default walking sound is muted in the backrooms, replaced by your own walking sounds
+	- backrooms: striped yellow wallpaper, carpet, white square lights, pillars, dead ends, few windows,
+	  doors (model 9343670755) with "Open Door"
+	- big rooms: 2 / 8 floor mega rooms AND a yellow multi-floor ATRIUM TOWER (up to 9 floors, stairs, NO barriers)
+	- square holes (pits + ceiling shafts) in normal backrooms
+	- THE POOLROOMS: infinite sideways AND infinite floors (every floor is another PoolRooms, stairs between them),
+	  small tiles with grout, arches, round lights, portholes, swimmable water, pool halls, tiered atriums
+	- no copied game objects inside the PoolRooms, backrooms use no fabric except the carpet
+	- Roblox's default walking sound is muted in the backrooms, replaced by your own (loud) walking sounds
+	- own ambient sound in the PoolRooms (94241101968368)
 	- respawn (reset) = back to the normal game
 ]]
 
@@ -29,39 +30,42 @@ while not player do task.wait() player = Players.LocalPlayer end
 local TICK_CHANCE      = 0.10            -- chance per second to noclip
 local WALL_CHANCE      = 0.50            -- chance when walking into a wall
 local INTRO_SOUND_ID   = 139682612041479
-local AMBIENT_SOUND_ID = 137406302438919
-local WALK_SOUND_BACK  = 89575970505811  -- walking on backrooms floor
-local WALK_SOUND_POOL  = 96516907071037  -- walking on poolrooms floor
+local AMBIENT_SOUND_ID = 137406302438919  -- backrooms ambient
+local POOL_AMBIENT_ID  = 94241101968368   -- PoolRooms ambient (only plays in the PoolRooms)
+local WALK_SOUND_BACK  = 89575970505811   -- walking on backrooms floor
+local WALK_SOUND_POOL  = 96516907071037   -- walking on poolrooms floor
 local CHAIR_ASSET_ID   = 74698525718385
 local DOOR_ASSET_ID    = 9343670755
 local HOUSE_CHANCE     = 0.10            -- chance a house exists in the backrooms
-local MEGA_CHANCE      = 0.30            -- chance of a very big multi-floor room
+local MEGA_CHANCE      = 0.35            -- chance of a big multi-floor map (half of those are the atrium tower)
 local POOL_CHANCE      = 0.50            -- chance the PoolRooms exist (they then go on forever on one side)
 local HOUSE_MODEL_NAME = nil             -- exact name of the house model in your game (nil = auto-detect)
 local DOOR_CHANCE      = 0.04            -- chance per zone-border wall piece to be a door
-local WINDOW_CHANCE    = 0.10            -- chance per wall piece to have a window (x2.5 on zone borders)
+local WINDOW_CHANCE    = 0.015           -- windows are rare now (x2.5 on zone borders)
 local PIT_CHANCE       = 0.025           -- square floor pits in normal cells
 local SHAFT_CHANCE     = 0.02            -- square ceiling shafts in normal cells
 local LIGHT_BRIGHTNESS = 0.55            -- backrooms ceiling light brightness (lower = darker)
 local CEILING_GRID     = true            -- ceiling tile lines
+local WALL_STRIPES     = true            -- vertical wallpaper stripes
 local CAMERA_BOB       = true            -- found-footage walking camera
-local STEP_VOLUME      = 0.6
+local STEP_VOLUME      = 3               -- walking sounds loudness (Roblox allows up to 10)
 local MUTE_DEFAULT_STEPS = true          -- silence Roblox's default walking sound inside the backrooms
 local T_TITLE, T_SUB, T_END = 3, 6, 11   -- seconds: BACKROOMS / Produced By Hecker / screen vanishes
 local STOP_INTRO_ON_REVEAL = true
 
 -- PoolRooms tile look
-local TILE_TEXTURE_ID  = 6372755229      -- square grid image (grout lines). Put another grid/tile texture id here if you like
+local TILE_TEXTURE_ID  = 6372755229      -- square grid image (grout lines / wallpaper stripes). Put another grid texture id here if you like
 local TILE_SIZE        = 1.5             -- studs per tile
 local TILE_LINE_TRANSPARENCY = 0.35      -- 1 = no grout lines, 0 = strong grout lines
-local PH               = 15              -- PoolRooms ceiling height
+local PH               = 17              -- PoolRooms ceiling height
+local PLH              = PH + 3          -- floor-to-floor height of the PoolRooms (stacked floors)
 
 local PROP_CHANCE  = 0.04                -- per cell chance of a copied model (backrooms only)
 local CHAIR_CHANCE = 0.03                -- per cell chance of a chair (backrooms only)
 
 local BASE = Vector3.new(0, 3000, 0)     -- where the backrooms live
 local CELL, WALL_H, WALL_T = 12, 13, 0.8
-local FH = WALL_H + 1                    -- floor-to-floor height in mega rooms
+local FH = WALL_H + 1                    -- floor-to-floor height in the big backrooms maps
 local DOOR_W, DOOR_H = 7, 9.5
 local R = 6                              -- zone size in cells
 local LOAD_R, UNLOAD_R = 8, 11
@@ -69,26 +73,28 @@ local DIRS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}}
 
 local C_BOARD = Color3.fromRGB(105, 88, 46)
 
--- wallpaper / carpet looks per zone
+-- backrooms looks copied from the reference photos
 local PALETTES = {
-	{wall = Color3.fromRGB(190, 171, 88),  carpet = Color3.fromRGB(135, 121, 66), ceil = Color3.fromRGB(190, 184, 156), off = 0.12},
-	{wall = Color3.fromRGB(165, 168, 118), carpet = Color3.fromRGB(104, 110, 76), ceil = Color3.fromRGB(180, 182, 160), off = 0.20},
-	{wall = Color3.fromRGB(184, 160, 128), carpet = Color3.fromRGB(112, 92, 80),  ceil = Color3.fromRGB(190, 180, 165), off = 0.20},
-	{wall = Color3.fromRGB(122, 106, 62),  carpet = Color3.fromRGB(84, 72, 46),   ceil = Color3.fromRGB(150, 142, 118), off = 0.38},
+	{wall = Color3.fromRGB(214, 182, 52),  carpet = Color3.fromRGB(186, 148, 38), ceil = Color3.fromRGB(140, 112, 56), off = 0.12}, -- classic bright yellow
+	{wall = Color3.fromRGB(196, 192, 84),  carpet = Color3.fromRGB(186, 176, 80), ceil = Color3.fromRGB(150, 148, 96), off = 0.15}, -- green-yellow pillars
+	{wall = Color3.fromRGB(222, 204, 140), carpet = Color3.fromRGB(198, 192, 160), ceil = Color3.fromRGB(205, 198, 160), off = 0.15}, -- pale cream
+	{wall = Color3.fromRGB(186, 156, 48),  carpet = Color3.fromRGB(96, 88, 80),   ceil = Color3.fromRGB(160, 140, 90), off = 0.30}, -- dark chevron + grey carpet
 }
 
--- PoolRooms colours (soft cream-grey tiles, not bright)
-local P_FLOOR = Color3.fromRGB(190, 186, 178)
-local P_WALL  = Color3.fromRGB(198, 194, 186)
-local P_CEIL  = Color3.fromRGB(176, 173, 166)
-local P_BASIN = Color3.fromRGB(146, 186, 192)
-local P_GLOW  = Color3.fromRGB(176, 192, 198)
+-- PoolRooms colours per floor (soft, not bright). Floor numbers repeat every 3
+local POOLPAL = {
+	{floor = Color3.fromRGB(190, 186, 178), wall = Color3.fromRGB(198, 194, 186), ceil = Color3.fromRGB(176, 173, 166), basin = Color3.fromRGB(146, 186, 192)},
+	{floor = Color3.fromRGB(166, 196, 182), wall = Color3.fromRGB(176, 204, 190), ceil = Color3.fromRGB(150, 178, 164), basin = Color3.fromRGB(120, 190, 170)},
+	{floor = Color3.fromRGB(184, 204, 208), wall = Color3.fromRGB(194, 212, 216), ceil = Color3.fromRGB(168, 188, 192), basin = Color3.fromRGB(130, 196, 206)},
+}
+local P_FLOOR, P_WALL, P_CEIL, P_BASIN = POOLPAL[1].floor, POOLPAL[1].wall, POOLPAL[1].ceil, POOLPAL[1].basin
+local P_GLOW = Color3.fromRGB(176, 196, 192)
 
 -- look of each area (lerped while you walk between them)
 local LOOKS = {
 	back = {amb = Color3.fromRGB(26, 23, 12),  fog = Color3.fromRGB(10, 9, 4),     tint = Color3.fromRGB(255, 240, 200), fs = 12, fe = 92,  ex = -0.3},
 	mega = {amb = Color3.fromRGB(26, 23, 12),  fog = Color3.fromRGB(10, 9, 4),     tint = Color3.fromRGB(255, 240, 200), fs = 30, fe = 260, ex = -0.3},
-	pool = {amb = Color3.fromRGB(70, 76, 80),  fog = Color3.fromRGB(86, 98, 104),  tint = Color3.fromRGB(222, 236, 242), fs = 25, fe = 120, ex = -0.1},
+	pool = {amb = Color3.fromRGB(58, 76, 70),  fog = Color3.fromRGB(62, 88, 80),   tint = Color3.fromRGB(205, 236, 225), fs = 20, fe = 115, ex = -0.12},
 }
 
 local HOUSE_WORDS = {"house", "home", "cabin", "mansion", "cottage", "apartment"}
@@ -103,15 +109,17 @@ local conns = {}
 local function track(c) conns[#conns + 1] = c return c end
 
 local busy, inBackrooms = false, false
-local rootFolder, ambience, introSound, overlay, noticeGui
+local rootFolder, ambience, poolAmbience, introSound, overlay, noticeGui
 local cells, templates, flicker = {}, {}, {}
 local chairTpl, doorTpl
-local zone, mega                         -- house / mega room rectangles (in cells)
+local zone, mega                         -- house / big multi-floor map rectangles (in cells)
 local poolCfg                            -- infinite PoolRooms side: {axis = 1|2, sign = 1|-1}
-local poolRegionCache, poolSites = {}, {}
+local poolRegionCache, poolSites, stairCache = {}, {}, {}
 local waterOK = false
 local doorW, doorH = DOOR_W - 0.7, DOOR_H - 0.4
 local SEED = 1
+local LV = 0                             -- PoolRooms floor currently being generated
+local playerLv = 0                       -- PoolRooms floor the player is on
 local regionCache = {}
 local savedLighting, savedWater, look
 local stepSounds = {}
@@ -152,6 +160,7 @@ local function rnd(x, z, salt)
 end
 
 local function ckey(x, z) return (x + 50000) * 100000 + (z + 50000) end
+local function ckey3(x, z, lv) return ckey(x, z) * 100 + lv + 50 end
 local function cellPos(x, z) return BASE + Vector3.new(x * CELL, 0, z * CELL) end
 local function inRect(r, x, z)
 	return r ~= nil and x >= r.x0 and x <= r.x1 and z >= r.z0 and z <= r.z1
@@ -207,11 +216,31 @@ local function holeBoxes(parent, cx, cz, hs, yc, thick, color, mat)
 	}
 end
 
---// ================= TILE TEXTURES (PoolRooms) =================
+-- real stairs (solid steps) running +X for 24 studs
+local function buildStairs(parent, xs, y0, zc, rise, steps, width, color, mat, tile)
+	local h = rise / steps
+	local tread = 24 / steps
+	for i = 0, steps - 1 do
+		local th = h * (i + 1)
+		local p = mk(parent, "Step", Vector3.new(tread, th, width), CFrame.new(xs + tread * (i + 0.5), y0 + th / 2, zc), color, mat)
+		if tile then
+			local t = Instance.new("Texture")
+			t.Texture = "rbxassetid://" .. TILE_TEXTURE_ID
+			t.Face = Enum.NormalId.Top
+			t.StudsPerTileU = TILE_SIZE
+			t.StudsPerTileV = TILE_SIZE
+			t.Transparency = TILE_LINE_TRANSPARENCY
+			t.Parent = p
+		end
+	end
+end
+
+--// ================= TEXTURES =================
 local NTOP, NBOT = Enum.NormalId.Top, Enum.NormalId.Bottom
 local NFRONT, NBACK = Enum.NormalId.Front, Enum.NormalId.Back
 local NLEFT, NRIGHT = Enum.NormalId.Left, Enum.NormalId.Right
 
+-- small tiles with grout lines (PoolRooms)
 local function tiled(part, ...)
 	for _, face in ipairs({...}) do
 		local t = Instance.new("Texture")
@@ -223,6 +252,22 @@ local function tiled(part, ...)
 		t.Parent = part
 	end
 	return part
+end
+
+-- vertical wallpaper stripes (backrooms)
+local function stripes(part, alongZ, wallColor)
+	if not WALL_STRIPES then return end
+	local faces = alongZ and {NRIGHT, NLEFT} or {NFRONT, NBACK}
+	for _, face in ipairs(faces) do
+		local t = Instance.new("Texture")
+		t.Texture = "rbxassetid://" .. TILE_TEXTURE_ID
+		t.Face = face
+		t.StudsPerTileU = 0.45
+		t.StudsPerTileV = 60
+		t.Transparency = 0.72
+		t.Color3 = shade(wallColor, 0.55)
+		t.Parent = part
+	end
 end
 
 --// ================= MODEL HELPERS =================
@@ -517,14 +562,14 @@ local function regionInfo(rx, rz)
 		local r = rnd(rx, rz, 40)
 		if r < 0.25 then s = 1 elseif r < 0.55 then s = 2 elseif r < 0.80 then s = 3 else s = 6 end
 		local q = rnd(rx, rz, 41)
-		if q < 0.55 then pal = PALETTES[1] elseif q < 0.72 then pal = PALETTES[2] elseif q < 0.86 then pal = PALETTES[3] else pal = PALETTES[4] end
+		if q < 0.50 then pal = PALETTES[1] elseif q < 0.68 then pal = PALETTES[2] elseif q < 0.84 then pal = PALETTES[3] else pal = PALETTES[4] end
 	end
 	c = {s = s, pal = pal}
 	regionCache[k] = c
 	return c
 end
 
--- the PoolRooms are one whole side of the map (infinite, like the backrooms)
+-- the PoolRooms are one whole side of the map (infinite sideways, and infinite floors up and down)
 local function isPoolCell(x, z)
 	if not poolCfg then return false end
 	local k = math.floor((poolCfg.axis == 1 and x or z) / R)
@@ -562,6 +607,9 @@ local function isSpecialCell(x, z)
 	return isPoolCell(x, z) and poolRegion(math.floor(x / R), math.floor(z / R)).kind ~= "maze"
 end
 
+-- floors that collide with the big pool halls / atriums on floor 0 stay empty above/below them
+local function blockedLv(lv) return lv == -1 or lv == 1 or lv == 2 end
+
 local function adjSpecial(cx, cz, dir)
 	local ox, oz = cx, cz
 	if dir == 1 then ox = cx + 1 else oz = cz + 1 end
@@ -577,10 +625,12 @@ local function edge(x, z, dir)
 	local rx, rz = math.floor(x / R), math.floor(z / R)
 	local qx, qz = math.floor(ox / R), math.floor(oz / R)
 	local pa, pb = isPoolCell(x, z), isPoolCell(ox, oz)
+	local ls = (pa or pb) and LV * 977 or 0 -- every PoolRooms floor has its own layout
 	if rx ~= qx or rz ~= qz then
 		-- border between two zones
 		if pa or pb then
-			local r = rnd(x, z, 130 + dir)
+			if LV ~= 0 and pa ~= pb then return 0 end
+			local r = rnd(x, z, 130 + dir + ls)
 			if r < 0.22 then return 1 end
 			if r < 0.55 then return 2 end
 			return 0
@@ -612,10 +662,11 @@ local function edge(x, z, dir)
 	if ax == nb - 1 and az == nb - 1 then carve = 0
 	elseif ax == nb - 1 then carve = 2
 	elseif az == nb - 1 then carve = 1
-	else carve = (rnd(gx, gz, 1 + s) < 0.5) and 1 or 2 end
-	local open = (carve == dir) or (rnd(gx, gz, 10 + dir + s * 3) < 0.22)
+	else carve = (rnd(gx, gz, 1 + s + ls) < 0.5) and 1 or 2 end
+	-- few extra openings => lots of dead ends
+	local open = (carve == dir) or (rnd(gx, gz, 10 + dir + s * 3 + ls) < 0.12)
 	if not open then return 0 end
-	if s == 1 then return (rnd(x, z, 20 + dir) < 0.55) and 2 or 1 end
+	if s == 1 then return (rnd(x, z, 20 + dir + ls) < 0.55) and 2 or 1 end
 	return 1
 end
 
@@ -627,8 +678,8 @@ local function hasWindow(x, z, dir)
 end
 
 -- a post is only needed at corners / wall ends, not on straight walls
-local function needPost(x, z)
-	if isSpecialCell(x, z) or isSpecialCell(x + 1, z) or isSpecialCell(x, z + 1) or isSpecialCell(x + 1, z + 1) then
+local function needPost(x, z, lv)
+	if (lv or 0) == 0 and (isSpecialCell(x, z) or isSpecialCell(x + 1, z) or isSpecialCell(x, z + 1) or isSpecialCell(x + 1, z + 1)) then
 		return false
 	end
 	local W = edge(x, z, 2) ~= 1
@@ -641,10 +692,41 @@ local function needPost(x, z)
 	return true
 end
 
+-- stairs between PoolRooms floors: anchor cell (even x) .. +1 climb from floor lv to floor lv+1, landing at +2
+local function withLevel(l, fn, ...)
+	local old = LV
+	LV = l
+	local ok, r = pcall(fn, ...)
+	LV = old
+	if ok then return r end
+	return nil
+end
+
+local function stairAt(ax, cz, lv)
+	if ax % 2 ~= 0 then return false end
+	local key = ckey3(ax, cz, lv)
+	local c = stairCache[key]
+	if c ~= nil then return c end
+	local res = false
+	if rnd(ax, cz, 180 + lv * 31) < 0.03 then
+		res = true
+		for dx = 0, 2 do
+			if not isPoolCell(ax + dx, cz) or poolRegion(math.floor((ax + dx) / R), math.floor(cz / R)).kind ~= "maze" then
+				res = false
+			end
+		end
+		if res and withLevel(lv, edge, ax, cz, 1) ~= 1 then res = false end
+		if res and withLevel(lv + 1, edge, ax + 1, cz, 1) ~= 1 then res = false end
+	end
+	stairCache[key] = res
+	return res
+end
+
 --// ================= BACKROOMS WALLS (no fabric, only the carpet is fabric) =================
 local function wallSeg(parent, center, len, alongZ, y0, h, color, board)
 	local size = alongZ and Vector3.new(WALL_T, h, len) or Vector3.new(len, h, WALL_T)
-	mk(parent, "Wall", size, CFrame.new(center.X, y0 + h / 2, center.Z), color, Enum.Material.Plastic)
+	local w = mk(parent, "Wall", size, CFrame.new(center.X, y0 + h / 2, center.Z), color, Enum.Material.Plastic)
+	if h > 4 then stripes(w, alongZ, color) end
 	if board then
 		local bs = alongZ and Vector3.new(WALL_T + 0.3, 0.7, len) or Vector3.new(len, 0.7, WALL_T + 0.3)
 		mk(parent, "Baseboard", bs, CFrame.new(center.X, y0 + 0.35, center.Z), C_BOARD, Enum.Material.Wood)
@@ -797,20 +879,25 @@ local function setLit(e, on)
 	if e.light then e.light.Enabled = on end
 end
 
--- square light hanging under a ceiling at world height ceilWorldY ("pool" = soft dim PoolRooms light)
+-- ceiling light. backrooms = white square panel, "pool" = soft round disc
 local function makeLight(parent, px, ceilWorldY, pz, lit, withPL, kind)
 	local pool = (kind == "pool")
-	local on = pool and P_GLOW or Color3.fromRGB(235, 222, 175)
-	mk(parent, "LightFrame", Vector3.new(5.2, 0.35, 5.2), CFrame.new(px, ceilWorldY - 0.175, pz),
-		pool and Color3.fromRGB(150, 152, 150) or Color3.fromRGB(150, 146, 130), Enum.Material.Metal)
-	local panel = mk(parent, "Light", Vector3.new(4.5, 0.22, 4.5), CFrame.new(px, ceilWorldY - 0.29, pz), on, Enum.Material.Neon)
+	local on = pool and P_GLOW or Color3.fromRGB(246, 242, 218)
+	local panel
+	if pool then
+		panel = mk(parent, "Light", Vector3.new(0.25, 5, 5), CFrame.new(px, ceilWorldY - 0.15, pz) * CFrame.Angles(0, 0, math.pi / 2), on, Enum.Material.Neon)
+		panel.Shape = Enum.PartType.Cylinder
+	else
+		mk(parent, "LightFrame", Vector3.new(5.2, 0.35, 5.2), CFrame.new(px, ceilWorldY - 0.175, pz), Color3.fromRGB(150, 146, 130), Enum.Material.Metal)
+		panel = mk(parent, "Light", Vector3.new(4.5, 0.22, 4.5), CFrame.new(px, ceilWorldY - 0.29, pz), on, Enum.Material.Neon)
+	end
 	local pl
 	if lit and withPL then
 		pl = Instance.new("PointLight")
 		pl.Range = pool and 28 or 24
 		pl.Brightness = pool and 0.45 or LIGHT_BRIGHTNESS
 		pl.Shadows = false
-		pl.Color = pool and Color3.fromRGB(205, 228, 238) or Color3.fromRGB(255, 236, 185)
+		pl.Color = pool and Color3.fromRGB(200, 232, 222) or Color3.fromRGB(255, 240, 200)
 		pl.Parent = panel
 	end
 	local e = {panel = panel, light = pl, base = lit, onColor = on, offColor = Color3.fromRGB(170, 166, 150)}
@@ -837,7 +924,7 @@ local function clearWaterList(list)
 end
 
 local function fakeWater(parent, x, y, z, sx, sy, sz)
-	local w = mk(parent, "Water", Vector3.new(sx, sy, sz), CFrame.new(x, y, z), Color3.fromRGB(60, 160, 172), Enum.Material.SmoothPlastic)
+	local w = mk(parent, "Water", Vector3.new(sx, sy, sz), CFrame.new(x, y, z), Color3.fromRGB(60, 160, 150), Enum.Material.SmoothPlastic)
 	w.Transparency = 0.55
 	w.CanCollide = false
 	w.CastShadow = false
@@ -848,7 +935,7 @@ local function testWater()
 	if not t then return false end
 	local ok = false
 	pcall(function()
-		local c = BASE + Vector3.new(0, -200, 0)
+		local c = BASE + Vector3.new(0, -300, 0)
 		t:FillBlock(CFrame.new(c), Vector3.new(4, 4, 4), Enum.Material.Water)
 		local region = Region3.new(c - Vector3.new(2, 2, 2), c + Vector3.new(2, 2, 2)):ExpandToGrid(4)
 		local mats = t:ReadVoxels(region, 4)
@@ -863,7 +950,7 @@ local function applyWaterLook()
 	local t = getTerrain()
 	if not t then return end
 	savedWater = {}
-	local new = {WaterColor = Color3.fromRGB(45, 160, 172), WaterTransparency = 0.6, WaterReflectance = 0.15, WaterWaveSize = 0.04, WaterWaveSpeed = 4}
+	local new = {WaterColor = Color3.fromRGB(65, 170, 150), WaterTransparency = 0.6, WaterReflectance = 0.15, WaterWaveSize = 0.04, WaterWaveSpeed = 4}
 	for _, k in ipairs(WATER_PROPS) do
 		pcall(function()
 			savedWater[k] = t[k]
@@ -872,54 +959,67 @@ local function applyWaterLook()
 	end
 end
 
--- pink flamingo pool float
-local function flamingo(parent, x, y, z)
-	local pink = Color3.fromRGB(226, 92, 132)
-	local SPM = Enum.Material.SmoothPlastic
-	for i = 0, 9 do
-		local a = i / 10 * math.pi * 2
-		local b = mk(parent, "Float", Vector3.new(1.1, 1.1, 1.1), CFrame.new(x + math.cos(a) * 1.9, y, z + math.sin(a) * 1.9), pink, SPM)
-		b.Shape = Enum.PartType.Ball
-		b.CanCollide = false
-	end
-	local neck = mk(parent, "Float", Vector3.new(2.4, 0.5, 0.5), CFrame.new(x + 1.9, y + 1.5, z) * CFrame.Angles(0, 0, math.pi / 2), pink, SPM)
-	neck.Shape = Enum.PartType.Cylinder
-	neck.CanCollide = false
-	local head = mk(parent, "Float", Vector3.new(0.8, 0.8, 0.8), CFrame.new(x + 1.9, y + 2.8, z), pink, SPM)
-	head.Shape = Enum.PartType.Ball
-	head.CanCollide = false
-	local beak = mk(parent, "Float", Vector3.new(0.6, 0.25, 0.25), CFrame.new(x + 2.35, y + 2.75, z), Color3.fromRGB(40, 30, 30), SPM)
-	beak.CanCollide = false
-end
-
---// ================= POOLROOMS CELLS =================
-local function poolWallSeg(parent, center, len, alongZ, y0, h)
+--// ================= POOLROOMS PIECES =================
+local function poolWallSeg(parent, center, len, alongZ, y0, h, pp)
 	if h < 0.05 or len < 0.05 then return end
 	local size = alongZ and Vector3.new(WALL_T, h, len) or Vector3.new(len, h, WALL_T)
-	local p = mk(parent, "PWall", size, CFrame.new(center.X, y0 + h / 2, center.Z), P_WALL, Enum.Material.SmoothPlastic)
+	local p = mk(parent, "PWall", size, CFrame.new(center.X, y0 + h / 2, center.Z), pp.wall, Enum.Material.SmoothPlastic)
 	if alongZ then tiled(p, NRIGHT, NLEFT) else tiled(p, NFRONT, NBACK) end
 	return p
 end
 
-local function poolWindow(parent, mid, alongZ, y0)
+-- rounded (stepped) arch doorway
+local function poolArch(parent, mid, alongZ, y0, pp)
+	local axis = alongZ and Vector3.new(0, 0, 1) or Vector3.new(1, 0, 0)
+	local gw = DOOR_W
+	local side = (CELL - gw) / 2
+	local off = gw / 2 + side / 2
+	poolWallSeg(parent, mid + axis * off, side, alongZ, y0, 7, pp)
+	poolWallSeg(parent, mid - axis * off, side, alongZ, y0, 7, pp)
+	local r = gw / 2
+	for i = 0, 4 do
+		local ym = 0.35 + i * 0.7
+		local gap = math.sqrt(math.max(r * r - ym * ym, 0.01))
+		local len = CELL / 2 - gap
+		local c = (CELL / 2 + gap) / 2
+		poolWallSeg(parent, mid + axis * c, len, alongZ, y0 + 7 + i * 0.7, 0.7, pp)
+		poolWallSeg(parent, mid - axis * c, len, alongZ, y0 + 7 + i * 0.7, 0.7, pp)
+	end
+	poolWallSeg(parent, mid, CELL, alongZ, y0 + 10.5, PH - 10.5, pp)
+end
+
+local function poolWindow(parent, mid, alongZ, y0, pp)
 	local WW, SILL, TOP = 6, 3, 9
 	local side = (CELL - WW) / 2
 	local off = WW / 2 + side / 2
 	local axis = alongZ and Vector3.new(0, 0, 1) or Vector3.new(1, 0, 0)
-	poolWallSeg(parent, mid + axis * off, side, alongZ, y0, PH)
-	poolWallSeg(parent, mid - axis * off, side, alongZ, y0, PH)
-	poolWallSeg(parent, mid, WW, alongZ, y0, SILL)
-	poolWallSeg(parent, mid, WW, alongZ, y0 + TOP, PH - TOP)
+	poolWallSeg(parent, mid + axis * off, side, alongZ, y0, PH, pp)
+	poolWallSeg(parent, mid - axis * off, side, alongZ, y0, PH, pp)
+	poolWallSeg(parent, mid, WW, alongZ, y0, SILL, pp)
+	poolWallSeg(parent, mid, WW, alongZ, y0 + TOP, PH - TOP, pp)
 	local gh = TOP - SILL
 	local gsize = alongZ and Vector3.new(0.12, gh, WW) or Vector3.new(WW, gh, 0.12)
-	local g = mk(parent, "Glass", gsize, CFrame.new(mid.X, y0 + SILL + gh / 2, mid.Z), Color3.fromRGB(190, 215, 220), Enum.Material.Glass)
+	local g = mk(parent, "Glass", gsize, CFrame.new(mid.X, y0 + SILL + gh / 2, mid.Z), Color3.fromRGB(190, 215, 210), Enum.Material.Glass)
 	g.Transparency = 0.8
 	g.CastShadow = false
-	-- soft glowing strips beside the window
 	for _, sg in ipairs({-1, 1}) do
 		local c = mid + axis * (sg * (WW / 2 + 0.45))
 		local size = alongZ and Vector3.new(WALL_T + 0.3, 8, 0.5) or Vector3.new(0.5, 8, WALL_T + 0.3)
 		mk(parent, "WindowGlow", size, CFrame.new(c.X, y0 + 6, c.Z), P_GLOW, Enum.Material.Neon)
+	end
+end
+
+-- three dark round portholes low on a wall
+local function poolPortholes(parent, mid, alongZ, y0)
+	local fx, fz = math.floor(mid.X), math.floor(mid.Z)
+	local sgn = (rnd(fx, fz, 175) < 0.5) and 1 or -1
+	local normal = alongZ and Vector3.new(sgn, 0, 0) or Vector3.new(0, 0, sgn)
+	local along = alongZ and Vector3.new(0, 0, 1) or Vector3.new(1, 0, 0)
+	for i = -1, 1 do
+		local pos = Vector3.new(mid.X, y0 + 2.6, mid.Z) + normal * (WALL_T / 2 + 0.06) + along * (i * 3.6)
+		local cf = CFrame.lookAt(pos, pos + normal)
+		local p = mk(parent, "Porthole", Vector3.new(0.1, 3, 3), cf * CFrame.Angles(0, math.pi / 2, 0), Color3.fromRGB(28, 50, 46), Enum.Material.SmoothPlastic)
+		p.Shape = Enum.PartType.Cylinder
 	end
 end
 
@@ -942,31 +1042,29 @@ local function poolShower(parent, mid, alongZ, y0)
 	mk(parent, "Towel", Vector3.new(1.2, 2.6, 0.12), cf * CFrame.new(-3, 4.5, -0.1), Color3.fromRGB(35, 40, 48), Enum.Material.SmoothPlastic)
 end
 
-local function buildPoolEdge(parent, cx, cz, dir, state)
+local function buildPoolEdge(parent, cx, cz, dir, state, y0, pp)
 	if state == 1 then return end
 	local base = cellPos(cx, cz)
 	local alongZ = (dir == 1)
 	local mid = alongZ and (base + Vector3.new(CELL / 2, 0, 0)) or (base + Vector3.new(0, 0, CELL / 2))
-	local y0 = BASE.Y
-	local axis = alongZ and Vector3.new(0, 0, 1) or Vector3.new(1, 0, 0)
 	if state == 0 then
-		local w = rnd(cx, cz, 81 + dir)
-		if w < 0.10 then
-			poolWindow(parent, mid, alongZ, y0)
+		local w = rnd(cx, cz, 81 + dir + LV * 977)
+		if w < 0.03 then
+			poolWindow(parent, mid, alongZ, y0, pp)
 		else
-			poolWallSeg(parent, mid, CELL, alongZ, y0, PH)
-			if w > 0.94 then poolShower(parent, mid, alongZ, y0) end
+			poolWallSeg(parent, mid, CELL, alongZ, y0, PH, pp)
+			if w > 0.95 then
+				poolShower(parent, mid, alongZ, y0)
+			elseif w > 0.84 then
+				poolPortholes(parent, mid, alongZ, y0)
+			end
 		end
 	else
-		local side = (CELL - DOOR_W) / 2
-		local off = DOOR_W / 2 + side / 2
-		poolWallSeg(parent, mid + axis * off, side, alongZ, y0, PH)
-		poolWallSeg(parent, mid - axis * off, side, alongZ, y0, PH)
-		poolWallSeg(parent, mid, DOOR_W, alongZ, y0 + 10, PH - 10)
+		poolArch(parent, mid, alongZ, y0, pp)
 	end
 end
 
--- big pool hall / tiered atrium (a whole zone built in one go)
+-- big pool hall / tiered atrium (a whole zone built in one go, floor 0 only)
 local function buildPoolSite(site, rx, rz, info)
 	local f = Instance.new("Folder")
 	f.Name = "PoolSite"
@@ -994,7 +1092,7 @@ local function buildPoolSite(site, rx, rz, info)
 		a.CastShadow = false
 		local pl = Instance.new("PointLight")
 		pl.Range, pl.Brightness, pl.Shadows = range, bright, false
-		pl.Color = Color3.fromRGB(205, 228, 238)
+		pl.Color = Color3.fromRGB(200, 232, 222)
 		pl.Parent = a
 	end
 
@@ -1013,7 +1111,6 @@ local function buildPoolSite(site, rx, rz, info)
 	rampPart(f, Vector3.new(ox, oy - 12, oz - (ph - 16)), Vector3.new(ox, oy, oz - ph), 8, P_BASIN, SPM)
 	addWater(site, ox, oy - 8, oz, 2 * ph, 8, 2 * ph)
 	if not waterOK then fakeWater(f, ox, oy - 8, oz, 2 * ph, 8, 2 * ph) end
-	flamingo(f, ox + 6, oy - 4 + 0.35, oz + 4)
 
 	-- ceiling with a skylight + soft light shaft
 	B("Ceil", -36, 36, cb, top, sh, 36, P_CEIL, nil, NBOT)
@@ -1029,7 +1126,7 @@ local function buildPoolSite(site, rx, rz, info)
 	glow(0, cb - 4, 0, 70, 0.5)
 
 	if atrium then
-		-- tiered balconies + two long ramps up
+		-- tiered balconies + two long ramps up (no railings)
 		for _, t in ipairs({{y = 15, inner = 26}, {y = 29, inner = 20}}) do
 			local yt, ib = t.y, t.inner
 			B("Balcony", -36, 36, yt - 2, yt, ib, 36, P_FLOOR, nil, NTOP, NBOT)
@@ -1103,83 +1200,118 @@ local function releaseSite(site)
 	end
 end
 
-local function buildPoolCell(cx, cz)
+local function buildPoolCell(cx, cz, lv)
 	local rx, rz = math.floor(cx / R), math.floor(cz / R)
 	local info = poolRegion(rx, rz)
-	if info.kind ~= "maze" then
-		local site = ensurePoolSite(rx, rz, info)
-		site.count += 1
+	local special = info.kind ~= "maze"
+	if special and (lv == 0 or blockedLv(lv)) then
 		local ef = Instance.new("Folder")
 		ef.Name = "Empty"
 		ef.Parent = rootFolder
-		cells[ckey(cx, cz)] = {folder = ef, x = cx, z = cz, site = site}
+		local rec = {folder = ef, x = cx, z = cz, lv = lv}
+		if lv == 0 then
+			local site = ensurePoolSite(rx, rz, info)
+			site.count += 1
+			rec.site = site
+		end
+		cells[ckey3(cx, cz, lv)] = rec
 		return
 	end
 
+	local oy = BASE.Y + lv * PLH
+	local pp = POOLPAL[lv % 3 + 1]
+	local L = lv * 977
+	local s = special and 6 or info.s
 	local f = Instance.new("Folder")
 	f.Name = "PoolCell"
 	local pos = cellPos(cx, cz)
-	local data = {folder = f, x = cx, z = cz, water = {}}
+	local data = {folder = f, x = cx, z = cz, lv = lv, water = {}}
 	local SPM = Enum.Material.SmoothPlastic
 
+	local ax = cx - (cx % 2)
+	local up = stairAt(ax, cz, lv)         -- a staircase leaves this floor here
+	local down = stairAt(ax, cz, lv - 1)   -- a staircase from the floor below arrives here
+
 	-- floor, sometimes with a small swimming pool
-	if rnd(cx, cz, 150) < 0.13 then
-		for _, p in ipairs(holeBoxes(f, pos.X, pos.Z, 8, BASE.Y - 0.5, 1, P_FLOOR, SPM)) do tiled(p, NTOP) end
-		tiled(mk(f, "BasinFloor", Vector3.new(8, 1, 8), CFrame.new(pos.X, BASE.Y - 8.5, pos.Z), P_BASIN, SPM), NTOP)
-		mk(f, "BasinWall", Vector3.new(8, 7, 0.4), CFrame.new(pos.X, BASE.Y - 4.5, pos.Z + 3.8), P_BASIN, SPM)
-		mk(f, "BasinWall", Vector3.new(8, 7, 0.4), CFrame.new(pos.X, BASE.Y - 4.5, pos.Z - 3.8), P_BASIN, SPM)
-		mk(f, "BasinWall", Vector3.new(0.4, 7, 8), CFrame.new(pos.X + 3.8, BASE.Y - 4.5, pos.Z), P_BASIN, SPM)
-		mk(f, "BasinWall", Vector3.new(0.4, 7, 8), CFrame.new(pos.X - 3.8, BASE.Y - 4.5, pos.Z), P_BASIN, SPM)
-		tiled(mk(f, "Step", Vector3.new(2, 4, 8), CFrame.new(pos.X + 3, BASE.Y - 6, pos.Z), P_BASIN, SPM), NTOP)
-		addWater(data, pos.X, BASE.Y - 6, pos.Z, 8, 4, 8)
-		if not waterOK then fakeWater(f, pos.X, BASE.Y - 6, pos.Z, 8, 4, 8) end
-		if rnd(cx, cz, 151) < 0.4 then flamingo(f, pos.X - 0.5, BASE.Y - 4 + 0.35, pos.Z) end
+	if down then
+		-- open stairwell, no floor
+	elseif (not up) and rnd(cx, cz, 150 + L) < 0.13 then
+		for _, p in ipairs(holeBoxes(f, pos.X, pos.Z, 8, oy - 1, 2, pp.floor, SPM)) do tiled(p, NTOP) end
+		tiled(mk(f, "BasinFloor", Vector3.new(8, 1, 8), CFrame.new(pos.X, oy - 8.5, pos.Z), pp.basin, SPM), NTOP)
+		mk(f, "BasinWall", Vector3.new(8, 6, 0.4), CFrame.new(pos.X, oy - 5, pos.Z + 3.8), pp.basin, SPM)
+		mk(f, "BasinWall", Vector3.new(8, 6, 0.4), CFrame.new(pos.X, oy - 5, pos.Z - 3.8), pp.basin, SPM)
+		mk(f, "BasinWall", Vector3.new(0.4, 6, 8), CFrame.new(pos.X + 3.8, oy - 5, pos.Z), pp.basin, SPM)
+		mk(f, "BasinWall", Vector3.new(0.4, 6, 8), CFrame.new(pos.X - 3.8, oy - 5, pos.Z), pp.basin, SPM)
+		tiled(mk(f, "Step", Vector3.new(2, 4, 8), CFrame.new(pos.X + 3, oy - 6, pos.Z), pp.basin, SPM), NTOP)
+		addWater(data, pos.X, oy - 6, pos.Z, 8, 4, 8)
+		if not waterOK then fakeWater(f, pos.X, oy - 6, pos.Z, 8, 4, 8) end
 	else
-		local fl = mk(f, "Floor", Vector3.new(CELL, 1, CELL), CFrame.new(pos.X, BASE.Y - 0.5, pos.Z), P_FLOOR, SPM)
+		local fl = mk(f, "Floor", Vector3.new(CELL, 2, CELL), CFrame.new(pos.X, oy - 1, pos.Z), pp.floor, SPM)
 		fl.Reflectance = 0.04
 		tiled(fl, NTOP)
 	end
 
-	-- ceiling, soft lights, skylight shafts
-	local hasLight = (cx + 2 * cz) % 3 == 0
-	local shaft = (not hasLight) and rnd(cx, cz, 152) < 0.06
-	if shaft then
-		for _, p in ipairs(holeBoxes(f, pos.X, pos.Z, 6, BASE.Y + PH + 0.5, 1, P_CEIL, SPM)) do tiled(p, NBOT) end
-		local sy = BASE.Y + PH + 6
-		mk(f, "ShaftWall", Vector3.new(6, 10, 0.4), CFrame.new(pos.X, sy, pos.Z + 2.8), P_CEIL, SPM)
-		mk(f, "ShaftWall", Vector3.new(6, 10, 0.4), CFrame.new(pos.X, sy, pos.Z - 2.8), P_CEIL, SPM)
-		mk(f, "ShaftWall", Vector3.new(0.4, 10, 6), CFrame.new(pos.X + 2.8, sy, pos.Z), P_CEIL, SPM)
-		mk(f, "ShaftWall", Vector3.new(0.4, 10, 6), CFrame.new(pos.X - 2.8, sy, pos.Z), P_CEIL, SPM)
-		local cap = mk(f, "ShaftCap", Vector3.new(6.4, 0.4, 6.4), CFrame.new(pos.X, BASE.Y + PH + 11.2, pos.Z), P_GLOW, Enum.Material.Neon)
+	-- stairs up to the next PoolRooms floor
+	if up and cx == ax then
+		buildStairs(f, pos.X - CELL / 2, oy, pos.Z, PLH, 20, CELL, pp.floor, SPM, true)
+	end
+
+	-- ceiling, round soft lights, skylight shafts
+	local hasLight = (not up) and ((cx + 2 * cz + lv) % 3 == 0)
+	local shaft = (not up) and (not hasLight) and rnd(cx, cz, 152 + L) < 0.06
+	if up then
+		-- open stairwell, no ceiling
+	elseif shaft then
+		for _, p in ipairs(holeBoxes(f, pos.X, pos.Z, 6, oy + PH + 0.5, 1, pp.ceil, SPM)) do tiled(p, NBOT) end
+		local sy = oy + PH + 6
+		mk(f, "ShaftWall", Vector3.new(6, 10, 0.4), CFrame.new(pos.X, sy, pos.Z + 2.8), pp.ceil, SPM)
+		mk(f, "ShaftWall", Vector3.new(6, 10, 0.4), CFrame.new(pos.X, sy, pos.Z - 2.8), pp.ceil, SPM)
+		mk(f, "ShaftWall", Vector3.new(0.4, 10, 6), CFrame.new(pos.X + 2.8, sy, pos.Z), pp.ceil, SPM)
+		mk(f, "ShaftWall", Vector3.new(0.4, 10, 6), CFrame.new(pos.X - 2.8, sy, pos.Z), pp.ceil, SPM)
+		local cap = mk(f, "ShaftCap", Vector3.new(6.4, 0.4, 6.4), CFrame.new(pos.X, oy + PH + 11.2, pos.Z), P_GLOW, Enum.Material.Neon)
 		local pl = Instance.new("PointLight")
 		pl.Range, pl.Brightness, pl.Shadows = 34, 0.6, false
-		pl.Color = Color3.fromRGB(205, 228, 238)
+		pl.Color = Color3.fromRGB(200, 232, 222)
 		pl.Parent = cap
 	else
-		tiled(mk(f, "Ceiling", Vector3.new(CELL, 1, CELL), CFrame.new(pos.X, BASE.Y + PH + 0.5, pos.Z), P_CEIL, SPM), NBOT)
+		tiled(mk(f, "Ceiling", Vector3.new(CELL, 1, CELL), CFrame.new(pos.X, oy + PH + 0.5, pos.Z), pp.ceil, SPM), NBOT)
 	end
 	if hasLight then
-		data.entry = makeLight(f, pos.X, BASE.Y + PH, pos.Z, rnd(cx, cz, 153) > 0.1, true, "pool")
+		data.entry = makeLight(f, pos.X, oy + PH, pos.Z, rnd(cx, cz, 153 + L) > 0.1, true, "pool")
 	end
 
 	-- walls (owned by this cell: east + north edge)
-	if not adjSpecial(cx, cz, 1) then buildPoolEdge(f, cx, cz, 1, edge(cx, cz, 1)) end
-	if not adjSpecial(cx, cz, 2) then buildPoolEdge(f, cx, cz, 2, edge(cx, cz, 2)) end
-	if needPost(cx, cz) then
-		local pp = pos + Vector3.new(CELL / 2, 0, CELL / 2)
-		mk(f, "PPost", Vector3.new(WALL_T + 0.2, PH, WALL_T + 0.2), CFrame.new(pp.X, BASE.Y + PH / 2, pp.Z), P_WALL, SPM)
+	local function edgeState(dir)
+		local st = edge(cx, cz, dir)
+		if lv ~= 0 and blockedLv(lv) then
+			local ox, oz = cx, cz
+			if dir == 1 then ox = cx + 1 else oz = cz + 1 end
+			if isSpecialCell(ox, oz) then st = 0 end
+		end
+		return st
+	end
+	if lv ~= 0 or not adjSpecial(cx, cz, 1) then buildPoolEdge(f, cx, cz, 1, edgeState(1), oy, pp) end
+	if lv ~= 0 or not adjSpecial(cx, cz, 2) then buildPoolEdge(f, cx, cz, 2, edgeState(2), oy, pp) end
+	if lv ~= 0 and blockedLv(lv) then
+		-- the empty floors above/below big halls need a wall around them
+		if isSpecialCell(cx - 1, cz) then buildPoolEdge(f, cx - 1, cz, 1, 0, oy, pp) end
+		if isSpecialCell(cx, cz - 1) then buildPoolEdge(f, cx, cz - 1, 2, 0, oy, pp) end
+	end
+	if needPost(cx, cz, lv) then
+		local pp2 = pos + Vector3.new(CELL / 2, 0, CELL / 2)
+		mk(f, "PPost", Vector3.new(WALL_T + 0.2, PH, WALL_T + 0.2), CFrame.new(pp2.X, oy + PH / 2, pp2.Z), pp.wall, SPM)
 	end
 
 	-- round columns in the bigger rooms
-	if info.s >= 3 and rnd(cx, cz, 160) < (info.s == 6 and 0.12 or 0.05) then
-		local ox = (rnd(cx, cz, 161) - 0.5) * 4
-		local oz = (rnd(cx, cz, 162) - 0.5) * 4
-		local col = mk(f, "Column", Vector3.new(PH, 2.6, 2.6), CFrame.new(pos.X + ox, BASE.Y + PH / 2, pos.Z + oz) * CFrame.Angles(0, 0, math.pi / 2), P_WALL, SPM)
+	if s >= 3 and (not up) and (not down) and rnd(cx, cz, 160 + L) < (s == 6 and 0.12 or 0.05) then
+		local dx = (rnd(cx, cz, 161) - 0.5) * 4
+		local dz = (rnd(cx, cz, 162) - 0.5) * 4
+		local col = mk(f, "Column", Vector3.new(PH, 2.6, 2.6), CFrame.new(pos.X + dx, oy + PH / 2, pos.Z + dz) * CFrame.Angles(0, 0, math.pi / 2), pp.wall, SPM)
 		col.Shape = Enum.PartType.Cylinder
 	end
 
 	f.Parent = rootFolder
-	cells[ckey(cx, cz)] = data
+	cells[ckey3(cx, cz, lv)] = data
 end
 
 --// ================= PROPS (backrooms only) =================
@@ -1258,18 +1390,18 @@ local function placeProp(parent, tpl, cx, cz, isChair)
 end
 
 --// ================= CELLS =================
-local function buildCell(cx, cz)
-	-- mega room is built as one piece, its cells stay empty
-	if inRect(mega, cx, cz) then
+local function buildCell(cx, cz, lv)
+	-- big multi-floor map is built as one piece, its cells stay empty
+	if lv == 0 and inRect(mega, cx, cz) then
 		local ef = Instance.new("Folder")
 		ef.Name = "Empty"
 		ef.Parent = rootFolder
-		cells[ckey(cx, cz)] = {folder = ef, x = cx, z = cz}
+		cells[ckey3(cx, cz, 0)] = {folder = ef, x = cx, z = cz, lv = 0}
 		return
 	end
-	-- the infinite PoolRooms
+	-- the infinite PoolRooms (every floor)
 	if isPoolCell(cx, cz) then
-		buildPoolCell(cx, cz)
+		buildPoolCell(cx, cz, lv)
 		return
 	end
 
@@ -1343,18 +1475,20 @@ local function buildCell(cx, cz)
 	local wcol = shade(pal.wall, 1 + (rnd(cx, cz, 7) - 0.5) * 0.08)
 	if not adjSpecial(cx, cz, 1) then buildEdgeWall(f, cx, cz, 1, edge(cx, cz, 1), wcol) end
 	if not adjSpecial(cx, cz, 2) then buildEdgeWall(f, cx, cz, 2, edge(cx, cz, 2), wcol) end
-	if needPost(cx, cz) then
+	if needPost(cx, cz, 0) then
 		local pp = pos + Vector3.new(CELL / 2, 0, CELL / 2)
 		mk(f, "Post", Vector3.new(WALL_T + 0.2, WALL_H, WALL_T + 0.2), CFrame.new(pp.X, BASE.Y + WALL_H / 2, pp.Z), wcol, Enum.Material.Plastic)
 	end
 
-	-- columns in wide / huge zones
+	-- big square pillars in wide / huge zones (like the reference photos)
 	if not zin and info.s >= 3 and not (math.abs(cx) <= 1 and math.abs(cz) <= 1) then
-		if rnd(cx, cz, 60) < (info.s == 6 and 0.16 or 0.06) then
+		if rnd(cx, cz, 60) < (info.s == 6 and 0.20 or 0.07) then
 			local ox = (rnd(cx, cz, 61) - 0.5) * 4
 			local oz = (rnd(cx, cz, 62) - 0.5) * 4
-			mk(f, "Column", Vector3.new(2.4, WALL_H, 2.4), CFrame.new(pos.X + ox, BASE.Y + WALL_H / 2, pos.Z + oz), shade(pal.wall, 0.96), Enum.Material.Plastic)
-			mk(f, "ColumnBase", Vector3.new(2.8, 0.7, 2.8), CFrame.new(pos.X + ox, BASE.Y + 0.35, pos.Z + oz), C_BOARD, Enum.Material.Wood)
+			local pc = shade(pal.wall, 0.96)
+			local pil = mk(f, "Pillar", Vector3.new(3.2, WALL_H, 3.2), CFrame.new(pos.X + ox, BASE.Y + WALL_H / 2, pos.Z + oz), pc, Enum.Material.Plastic)
+			stripes(pil, true, pc)
+			stripes(pil, false, pc)
 		end
 	end
 
@@ -1372,22 +1506,42 @@ local function buildCell(cx, cz)
 	end
 
 	f.Parent = rootFolder
-	cells[ckey(cx, cz)] = {folder = f, x = cx, z = cz, entry = entry}
+	cells[ckey3(cx, cz, 0)] = {folder = f, x = cx, z = cz, lv = 0, entry = entry}
 end
 
-local function streamCells(cx, cz, budget)
+local function streamCells(cx, cz, lvP, budget)
 	if not rootFolder then return end
 	local missing = {}
 	for dz = -LOAD_R, LOAD_R do
 		for dx = -LOAD_R, LOAD_R do
 			local x, z = cx + dx, cz + dz
-			if not cells[ckey(x, z)] then missing[#missing + 1] = {x, z, dx * dx + dz * dz} end
+			local d2 = dx * dx + dz * dz
+			if isPoolCell(x, z) then
+				for lv = lvP - 1, lvP + 1 do
+					if (lv == lvP or d2 <= 16) and not cells[ckey3(x, z, lv)] then
+						missing[#missing + 1] = {x, z, lv, d2 + (lv == lvP and 0 or 1000)}
+					end
+				end
+			elseif math.abs(lvP) <= 1 and not cells[ckey3(x, z, 0)] then
+				missing[#missing + 1] = {x, z, 0, d2}
+			end
 		end
 	end
-	table.sort(missing, function(a, b) return a[3] < b[3] end)
-	for i = 1, math.min(#missing, budget) do buildCell(missing[i][1], missing[i][2]) end
+	table.sort(missing, function(a, b) return a[4] < b[4] end)
+	for i = 1, math.min(#missing, budget) do
+		local m = missing[i]
+		LV = m[3]
+		local ok, err = pcall(buildCell, m[1], m[2], m[3])
+		LV = 0
+		if not ok then
+			warn("[Backrooms] cell error: " .. tostring(err))
+			local ef = Instance.new("Folder")
+			ef.Parent = rootFolder
+			cells[ckey3(m[1], m[2], m[3])] = {folder = ef, x = m[1], z = m[2], lv = m[3]}
+		end
+	end
 	for k, c in pairs(cells) do
-		if math.max(math.abs(c.x - cx), math.abs(c.z - cz)) > UNLOAD_R then
+		if math.max(math.abs(c.x - cx), math.abs(c.z - cz)) > UNLOAD_R or math.abs(c.lv - lvP) > 1 then
 			c.folder:Destroy()
 			if c.water then clearWaterList(c.water) end
 			if c.site then releaseSite(c.site) end
@@ -1403,8 +1557,8 @@ local function updateFlicker(now, cx, cz)
 		local tx, tz = cx + math.random(-4, 4), cz + math.random(-4, 4)
 		for dx = -2, 2 do
 			for dz = -2, 2 do
-				local c = cells[ckey(tx + dx, tz + dz)]
-				local e = c and (c.entry)
+				local c = cells[ckey3(tx + dx, tz + dz, playerLv)]
+				local e = c and c.entry
 				if e and e.base and ((dx == 0 and dz == 0) or math.random() < 0.5) then
 					flicker[e] = {stop = now + 5, nxt = 0}
 				end
@@ -1469,8 +1623,13 @@ local function buildHouse(dirIdx)
 	zone = Z
 end
 
---// ================= MEGA ROOM (2 or 8 floors) =================
-local function rampCells(M, k)
+--// ================= BIG MULTI-FLOOR MAPS (mega room / atrium tower) =================
+local function stairCells(M, k)
+	if M.tower then
+		local sx = (k % 2 == 1) and (M.x0 + 1) or (M.x1 - 3)
+		local sz = (k % 2 == 1) and M.z1 or (M.z1 - 1)
+		return sx, sz
+	end
 	local sz = M.z0 + 1 + math.floor(rnd(k, 7, 100) * 7)
 	local sx = (k % 2 == 1) and (M.x0 + 1) or (M.x1 - 3)
 	return sx, sz
@@ -1489,15 +1648,16 @@ local function layeredHole(parent, cx, cz, hs, yTop, pal)
 	layered(parent, cx + hs / 2 + strip / 2, cz, strip, hs, yTop, pal)
 end
 
-local function buildMega(dirIdx)
-	local n = (math.random() < 0.55) and 2 or 8
+local function buildMega(dirIdx, tower)
+	local n
+	if tower then n = math.random(5, 9) else n = (math.random() < 0.55) and 2 or 8 end
 	local dv = DIRS[dirIdx]
 	local dist = 8 + math.random(0, 3)
 	local hx, hz = dv[1] * dist, dv[2] * dist
-	local M = {x0 = hx - 4, x1 = hx + 4, z0 = hz - 4, z1 = hz + 4, n = n, entries = {}}
+	local M = {x0 = hx - 4, x1 = hx + 4, z0 = hz - 4, z1 = hz + 4, n = n, entries = {}, tower = tower}
 	local pal = PALETTES[1]
 	local f = Instance.new("Folder")
-	f.Name = "MegaRoom"
+	f.Name = tower and "AtriumTower" or "MegaRoom"
 
 	local xmin, xmax = BASE.X + (M.x0 - 0.5) * CELL, BASE.X + (M.x1 + 0.5) * CELL
 	local zmin, zmax = BASE.Z + (M.z0 - 0.5) * CELL, BASE.Z + (M.z1 + 0.5) * CELL
@@ -1508,17 +1668,22 @@ local function buildMega(dirIdx)
 	mk(f, "Floor", Vector3.new(W, 1, W), CFrame.new(mx0, BASE.Y - 0.5, mz0), pal.carpet, Enum.Material.Fabric)
 	mk(f, "Ceiling", Vector3.new(W, 1, W), CFrame.new(mx0, BASE.Y + topY + 0.5, mz0), pal.ceil, Enum.Material.Plastic)
 
-	-- what each floor cell looks like: slab / full hole / square hole
+	-- what each floor cell looks like: slab / full hole / square hole (no railings anywhere)
 	local function state(k, x, z)
-		local rs, rz = rampCells(M, k)
+		local rs, rz = stairCells(M, k)
 		if z == rz and (x == rs or x == rs + 1) then return "hole" end
 		if z == rz and x == rs + 2 then return "slab" end
 		if k + 1 <= n - 1 then
-			local ns, nz = rampCells(M, k + 1)
+			local ns, nz = stairCells(M, k + 1)
 			if z == nz and (x == ns or x == ns + 1) then return "slab" end
 		end
+		if tower and x >= M.x0 + 2 and x <= M.x1 - 2 and z >= M.z0 + 2 and z <= M.z1 - 2 then return "hole" end
 		local r = rnd(x, z, 200 + k)
-		if r < 0.06 then return "hole" elseif r < 0.17 then return "sq" end
+		if tower then
+			if r < 0.04 then return "hole" elseif r < 0.09 then return "sq" end
+		else
+			if r < 0.06 then return "hole" elseif r < 0.17 then return "sq" end
+		end
 		return "slab"
 	end
 
@@ -1536,7 +1701,7 @@ local function buildMega(dirIdx)
 		end
 	end
 
-	-- square lights under every ceiling
+	-- white square lights under every ceiling
 	for k = 0, n - 1 do
 		local ceilWorld = BASE.Y + (k + 1) * FH - 1
 		for x = M.x0, M.x1 do
@@ -1554,20 +1719,20 @@ local function buildMega(dirIdx)
 		end
 	end
 
-	-- columns
-	for i = 1, 4 do
-		for j = 1, 4 do
-			local cxp, czp = xmin + 24 * i, zmin + 24 * j
-			mk(f, "Column", Vector3.new(2.6, topY, 2.6), CFrame.new(cxp, BASE.Y + topY / 2, czp), shade(pal.wall, 0.95), Enum.Material.Plastic)
+	-- columns (only in the normal mega room, the tower stays open)
+	if not tower then
+		for i = 1, 4 do
+			for j = 1, 4 do
+				local cxp, czp = xmin + 24 * i, zmin + 24 * j
+				mk(f, "Column", Vector3.new(2.6, topY, 2.6), CFrame.new(cxp, BASE.Y + topY / 2, czp), shade(pal.wall, 0.95), Enum.Material.Plastic)
+			end
 		end
 	end
 
-	-- ramps between floors
+	-- real stairs between floors
 	for k = 1, n - 1 do
-		local rs, rz = rampCells(M, k)
-		local a = Vector3.new(BASE.X + (rs - 0.5) * CELL, BASE.Y + (k - 1) * FH, BASE.Z + rz * CELL)
-		local b = Vector3.new(BASE.X + (rs + 1.5) * CELL, BASE.Y + k * FH, BASE.Z + rz * CELL)
-		rampPart(f, a, b, 8, pal.carpet, Enum.Material.Fabric)
+		local rs, rz = stairCells(M, k)
+		buildStairs(f, BASE.X + (rs - 0.5) * CELL, BASE.Y + (k - 1) * FH, BASE.Z + rz * CELL, FH, 16, 10, pal.carpet, Enum.Material.Fabric, false)
 	end
 
 	-- outer skirt closes the upper floors
@@ -1575,10 +1740,28 @@ local function buildMega(dirIdx)
 	local hh = topAbs - (BASE.Y + WALL_H)
 	local cy = BASE.Y + WALL_H + hh / 2
 	local F, wc = Enum.Material.Plastic, pal.wall
-	mk(f, "Skirt", Vector3.new(W + WALL_T, hh, WALL_T), CFrame.new(mx0, cy, zmin), wc, F)
-	mk(f, "Skirt", Vector3.new(W + WALL_T, hh, WALL_T), CFrame.new(mx0, cy, zmax), wc, F)
-	mk(f, "Skirt", Vector3.new(WALL_T, hh, W + WALL_T), CFrame.new(xmin, cy, mz0), wc, F)
-	mk(f, "Skirt", Vector3.new(WALL_T, hh, W + WALL_T), CFrame.new(xmax, cy, mz0), wc, F)
+	local sk = {
+		mk(f, "Skirt", Vector3.new(W + WALL_T, hh, WALL_T), CFrame.new(mx0, cy, zmin), wc, F),
+		mk(f, "Skirt", Vector3.new(W + WALL_T, hh, WALL_T), CFrame.new(mx0, cy, zmax), wc, F),
+		mk(f, "Skirt", Vector3.new(WALL_T, hh, W + WALL_T), CFrame.new(xmin, cy, mz0), wc, F),
+		mk(f, "Skirt", Vector3.new(WALL_T, hh, W + WALL_T), CFrame.new(xmax, cy, mz0), wc, F),
+	}
+	stripes(sk[1], false, wc) stripes(sk[2], false, wc) stripes(sk[3], true, wc) stripes(sk[4], true, wc)
+
+	-- tower: dark room doors on every floor along the inner walls
+	if tower then
+		local dc = Color3.fromRGB(72, 54, 36)
+		for k = 1, n - 1 do
+			local yc = BASE.Y + k * FH + 4.5
+			for i = 0, 2 do
+				local p = cellPos(M.x0 + 1 + i * 3, M.z0 + 1 + i * 3)
+				mk(f, "RoomDoor", Vector3.new(4, 9, 0.3), CFrame.new(p.X, yc, zmin + 0.55), dc, Enum.Material.Wood)
+				mk(f, "RoomDoor", Vector3.new(4, 9, 0.3), CFrame.new(p.X, yc, zmax - 0.55), dc, Enum.Material.Wood)
+				mk(f, "RoomDoor", Vector3.new(0.3, 9, 4), CFrame.new(xmin + 0.55, yc, p.Z), dc, Enum.Material.Wood)
+				mk(f, "RoomDoor", Vector3.new(0.3, 9, 4), CFrame.new(xmax - 0.55, yc, p.Z), dc, Enum.Material.Wood)
+			end
+		end
+	end
 
 	f.Parent = rootFolder
 	M.wxmin, M.wxmax, M.wzmin, M.wzmax = xmin, xmax, zmin, zmax
@@ -1971,7 +2154,7 @@ local function createOverlay()
 	return o
 end
 
---// ================= FOOTSTEPS + FOUND-FOOTAGE CAMERA =================
+--// ================= FOOTSTEPS + AMBIENCE + FOUND-FOOTAGE CAMERA =================
 local function startFootsteps()
 	for _, s in pairs(stepSounds) do pcall(function() s:Destroy() end) end
 	stepSounds = {
@@ -1998,6 +2181,18 @@ local function updateFootsteps(hum, hrp)
 		elseif s.IsPlaying then
 			s:Pause()
 		end
+	end
+end
+
+-- backrooms ambient everywhere, PoolRooms ambient only inside the PoolRooms
+local function updateAmbience()
+	if not ambience then return end
+	if curArea == "pool" and poolAmbience then
+		if ambience.IsPlaying then ambience:Pause() end
+		if not poolAmbience.IsPlaying then poolAmbience:Play() end
+	else
+		if poolAmbience and poolAmbience.IsPlaying then poolAmbience:Pause() end
+		if not ambience.IsPlaying then ambience:Play() end
 	end
 end
 
@@ -2064,14 +2259,15 @@ cleanupBackrooms = function()
 	for k in pairs(cells) do cells[k] = nil end
 	if rootFolder then pcall(function() rootFolder:Destroy() end) rootFolder = nil end
 	zone, mega, poolCfg = nil, nil, nil
-	regionCache, poolRegionCache = {}, {}
-	curArea = "back"
+	regionCache, poolRegionCache, stairCache = {}, {}, {}
+	curArea, LV, playerLv = "back", 0, 0
 	restoreLighting()
 	restoreDefaultSteps()
 	stopFootsteps()
 	unbindCamera()
 	if overlay then pcall(overlay.destroy) overlay = nil end
 	if ambience then ambience:Destroy() ambience = nil end
+	if poolAmbience then poolAmbience:Destroy() poolAmbience = nil end
 end
 
 local function enterBackrooms()
@@ -2079,7 +2275,8 @@ local function enterBackrooms()
 	if not char then error("no character") end
 
 	SEED = math.random(1, 99999)
-	regionCache, poolRegionCache, poolSites = {}, {}, {}
+	regionCache, poolRegionCache, poolSites, stairCache = {}, {}, {}, {}
+	LV, playerLv = 0, 0
 	rootFolder = Instance.new("Folder")
 	rootFolder.Name = "BR_" .. math.random(1000, 9999)
 	rootFolder.Parent = Workspace
@@ -2107,17 +2304,20 @@ local function enterBackrooms()
 	end
 
 	if math.random() < POOL_CHANCE then
-		-- the PoolRooms take one whole side of the map, forever
+		-- the PoolRooms take one whole side of the map, forever (and infinite floors)
 		local dv = DIRS[nextDir()]
 		poolCfg = {axis = (dv[1] ~= 0) and 1 or 2, sign = (dv[1] ~= 0) and dv[1] or dv[2]}
 		waterOK = testWater()
 		applyWaterLook()
 	end
-	if math.random() < MEGA_CHANCE then try(buildMega) end
+	if math.random() < MEGA_CHANCE then
+		local tower = math.random() < 0.5
+		try(function(d) buildMega(d, tower) end)
+	end
 	if math.random() < HOUSE_CHANCE then try(buildHouse) end
 
 	applyLighting()
-	streamCells(0, 0, 1e9)
+	streamCells(0, 0, 0, 1e9)
 
 	char:PivotTo(CFrame.new(BASE + Vector3.new(0, 4, 0)))
 	for _, p in ipairs(char:GetDescendants()) do
@@ -2182,6 +2382,7 @@ startSequence = function(culprit)
 			pcall(function()
 				ambience = makeSound(AMBIENT_SOUND_ID, 0.8, true)
 				ambience:Play()
+				if poolCfg then poolAmbience = makeSound(POOL_AMBIENT_ID, 0.8, true) end
 			end)
 		end
 		busy = false
@@ -2254,17 +2455,15 @@ task.spawn(function()
 end)
 
 -- which area is the player in?
-local function detectArea(pos)
-	local rel = pos - BASE
-	local cx, cz = math.floor(rel.X / CELL + 0.5), math.floor(rel.Z / CELL + 0.5)
-	if isPoolCell(cx, cz) and pos.Y > BASE.Y - 60 then return "pool" end
+local function detectArea(pos, cx, cz)
+	if isPoolCell(cx, cz) and pos.Y > BASE.Y - 600 then return "pool" end
 	if mega and pos.X > mega.wxmin and pos.X < mega.wxmax and pos.Z > mega.wzmin and pos.Z < mega.wzmax then
 		return "mega"
 	end
 	return "back"
 end
 
--- streaming / flicker / areas / footsteps / wall check
+-- streaming / flicker / areas / sounds / wall check
 local lastCX, lastCZ, acc = 0, 0, 0
 track(RunService.Heartbeat:Connect(function(dt)
 	if not alive then return end
@@ -2272,16 +2471,22 @@ track(RunService.Heartbeat:Connect(function(dt)
 	if inBackrooms and rootFolder then
 		local char, hum, hrp = getChar()
 		if hrp then
+			local rel = hrp.Position - BASE
+			lastCX = math.floor(rel.X / CELL + 0.5)
+			lastCZ = math.floor(rel.Z / CELL + 0.5)
+			if isPoolCell(lastCX, lastCZ) then
+				playerLv = math.floor((rel.Y + 3) / PLH)
+			else
+				playerLv = 0
+			end
+
 			acc += dt
 			if acc >= 0.2 then
 				acc = 0
-				local rel = hrp.Position - BASE
-				lastCX = math.floor(rel.X / CELL + 0.5)
-				lastCZ = math.floor(rel.Z / CELL + 0.5)
-				streamCells(lastCX, lastCZ, 8)
+				streamCells(lastCX, lastCZ, playerLv, 8)
 			end
 
-			local newArea = detectArea(hrp.Position)
+			local newArea = detectArea(hrp.Position, lastCX, lastCZ)
 			if newArea ~= curArea then
 				if newArea == "pool" and overlay then
 					overlay.areaTitle("The PoolRooms")
@@ -2292,6 +2497,7 @@ track(RunService.Heartbeat:Connect(function(dt)
 			end
 			lookStep(dt, LOOKS[curArea] or LOOKS.back)
 			muteDefaultSteps(char)
+			updateAmbience()
 			if hum then updateFootsteps(hum, hrp) end
 		end
 		updateFlicker(now, lastCX, lastCZ)
