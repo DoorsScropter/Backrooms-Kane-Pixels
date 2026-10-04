@@ -1,5 +1,5 @@
 --[[
-	BACKROOMS NOCLIP v3.5 (Enhanced Textures, Dimmed PoolRooms, 5/8-Floor Mega Rooms)
+	BACKROOMS NOCLIP v3.6 (Fully Integrated: Textures, Dimmed PoolRooms, 5/8-Floor Mega Rooms, & Noclip Trigger)
 	LocalScript (client-sided) | Delta compatible
 ]]
 
@@ -15,8 +15,8 @@ local player = Players.LocalPlayer
 while not player do task.wait() player = Players.LocalPlayer end
 
 --// ================= CONFIG =================
-local TICK_CHANCE      = 0.10            -- chance per second to noclip
-local WALL_CHANCE      = 0.50            -- chance when walking into a wall
+local TICK_CHANCE      = 0.10            -- chance per second to noclip randomly
+local WALL_CHANCE      = 0.50            -- chance when walking into a wall to noclip (50%)
 local INTRO_SOUND_ID   = 139682612041479
 local AMBIENT_SOUND_ID = 137406302438919
 local WALK_SOUND_BACK  = 89575970505811  -- walking on backrooms floor
@@ -35,8 +35,6 @@ local LIGHT_BRIGHTNESS = 0.35            -- reduced ceiling light brightness for
 local CEILING_GRID     = true            -- ceiling tile lines
 local CAMERA_BOB       = true            -- found-footage walking camera
 local STEP_VOLUME      = 0.5
-local T_TITLE, T_SUB, T_END = 3, 6, 11   -- intro timings
-local STOP_INTRO_ON_REVEAL = true
 
 local PROP_CHANCE  = 0.04                -- per cell chance of a copied model
 local CHAIR_CHANCE = 0.03                -- per cell chance of a chair
@@ -51,7 +49,6 @@ local DIRS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}}
 
 local C_BOARD = Color3.fromRGB(105, 88, 46)
 
--- wallpaper / carpet looks per zone (using varied textures)
 local PALETTES = {
 	{wall = Color3.fromRGB(190, 171, 88),  carpet = Color3.fromRGB(135, 121, 66), ceil = Color3.fromRGB(190, 184, 156), mat = Enum.Material.SmoothPlastic, off = 0.12},
 	{wall = Color3.fromRGB(165, 168, 118), carpet = Color3.fromRGB(104, 110, 76), ceil = Color3.fromRGB(180, 182, 160), mat = Enum.Material.Concrete, off = 0.20},
@@ -886,7 +883,7 @@ local function buildHouse(dirIdx)
 	zone = Z
 end
 
---// ================= MEGA ROOM (5 or 8 Floors Liminal Reveal) =================
+--// ================= MEGA ROOM (5 or 8 Floors) =================
 local function rampCells(M, k)
 	local sz = M.z0 + 1 + math.floor(rnd(k, 7, 100) * 7)
 	local sx = (k % 2 == 1) and (M.x0 + 1) or (M.x1 - 3)
@@ -907,7 +904,6 @@ local function layeredHole(parent, cx, cz, hs, yTop, pal)
 end
 
 local function buildMega(dirIdx)
-	-- Randomly pick between 5 floors or 8 floors for maximum liminal vertical exposure
 	local n = (math.random() < 0.5) and 5 or 8
 	local dv = DIRS[dirIdx]
 	local dist = 8 + math.random(0, 3)
@@ -998,7 +994,9 @@ local function buildMega(dirIdx)
 	mega = M
 end
 
---// ================= POOLROOMS (Dimmed & Detailed) =================
+end
+
+--// ================= POOLROOMS =================
 local WATER_PROPS = {"WaterColor", "WaterTransparency", "WaterReflectance", "WaterWaveSize", "WaterWaveSpeed"}
 
 local function buildPool(dirIdx)
@@ -1012,10 +1010,9 @@ local function buildPool(dirIdx)
 
 	local TILE = Color3.fromRGB(195, 210, 215)
 	local TILE2 = Color3.fromRGB(135, 175, 185)
-	local BANDC = Color3.fromRGB(52, 125, 142)
 	local DARK = Color3.fromRGB(35, 65, 75)
 	local WHITE = Color3.fromRGB(240, 245, 250)
-	local SP, NEON, GLASS = Enum.Material.SmoothPlastic, Enum.Material.Neon, Enum.Material.Glass
+	local SP, NEON = Enum.Material.SmoothPlastic, Enum.Material.Neon
 
 	local function P(name, x0, x1, y0, y1, z0, z1, color, mat, refl)
 		local p = mk(f, name, Vector3.new(x1 - x0, y1 - y0, z1 - z0),
@@ -1024,10 +1021,9 @@ local function buildPool(dirIdx)
 		return p
 	end
 	
-	-- Dimmed lighting for PoolRooms (so it's not blindingly bright)
 	local function addLight(part, range, bright)
 		local pl = Instance.new("PointLight")
-		pl.Range, pl.Brightness, pl.Shadows = range, bright * 0.4, false -- dimmed down
+		pl.Range, pl.Brightness, pl.Shadows = range, bright * 0.4, false
 		pl.Color = Color3.fromRGB(175, 215, 235)
 		pl.Parent = part
 	end
@@ -1058,14 +1054,6 @@ local function buildPool(dirIdx)
 		end
 	end
 
-	P("CorridorNeon", -88, 88, 13.6, 14, 83.5, 84.5, WHITE, NEON)
-	P("CorridorNeon", -88, 88, 13.6, 14, -84.5, -83.5, WHITE, NEON)
-	P("CorridorNeon", 83.5, 84.5, 13.6, 14, -80, 80, WHITE, NEON)
-	P("CorridorNeon", -84.5, -83.5, 13.6, 14, -80, 80, WHITE, NEON)
-	for _, p in ipairs({{0, 84}, {0, -84}, {84, 0}, {-84, 0}, {50, 84}, {-50, -84}, {84, -50}, {-84, 50}}) do
-		glowLight(p[1], 12, p[2], 25, 0.4)
-	end
-
 	local function basin(x0, x1, z0, z1)
 		P("BasinFloor", x0 - 2, x1 + 2, -14, -12, z0 - 2, z1 + 2, TILE2, SP, 0.08)
 		P("BasinW", x0 - 2, x0, -14, -2, z0 - 2, z1 + 2, TILE2)
@@ -1075,43 +1063,6 @@ local function buildPool(dirIdx)
 	end
 	local pools = {{-72, 72, 40, 72}, {-72, -40, -72, -40}, {40, 72, -72, -40}}
 	for _, q in ipairs(pools) do basin(q[1], q[2], q[3], q[4]) end
-
-	for _, lz in ipairs({48, 56, 64}) do P("Lane", -72, 72, -12, -11.9, lz - 0.3, lz + 0.3, DARK) end
-	for _, lz in ipairs({-48, -56, -64}) do
-		P("Lane", -72, -40, -12, -11.9, lz - 0.3, lz + 0.3, DARK)
-		P("Lane", 40, 72, -12, -11.9, lz - 0.3, lz + 0.3, DARK)
-	end
-
-	local UW = Color3.fromRGB(150, 210, 225)
-	for _, x in ipairs({-60, -36, -12, 12, 36, 60}) do P("UWLight", x - 1.5, x + 1.5, -9, -7, 71.7, 72, UW, NEON) end
-	for _, x in ipairs({-56, 56}) do P("UWLight", x - 1.5, x + 1.5, -9, -7, -72, -71.7, UW, NEON) end
-
-	for _, x in ipairs({-56, 56}) do
-		rampPart(f, Vector3.new(ox + x, oy - 12, oz + 60), Vector3.new(ox + x, oy, oz + 40), 8, TILE2, SP)
-		rampPart(f, Vector3.new(ox + x, oy - 12, oz - 60), Vector3.new(ox + x, oy, oz - 40), 8, TILE2, SP)
-	end
-
-	P("CanalWall", -40, 40, -2, 6, 38, 40, TILE2)
-	P("CanalWall", -40, 40, -2, 6, 72, 74, TILE2)
-	P("CanalRoof", -40, 40, 4, 6, 38, 74, TILE, SP, 0.04)
-
-	P("PitWall", -34, 34, -122, -2, 32, 34, TILE)
-	P("PitWall", -34, 34, -122, -2, -34, -32, TILE)
-	P("PitWall", 32, 34, -122, -2, -32, 32, TILE)
-	P("PitWall", -34, -32, -122, -2, -32, 32, TILE)
-	P("PitFloor", -34, 34, -122, -120, -34, 34, TILE2, SP, 0.08)
-	
-	for _, y in ipairs({-15, -45, -75, -105}) do glowLight(0, y, 0, 50, 0.5) end
-
-	local corners = {{-29, 29}, {29, 29}, {29, -29}, {-29, -29}}
-	local y = 0
-	for i = 0, 11 do
-		local a = corners[i % 4 + 1]
-		local b = corners[(i + 1) % 4 + 1]
-		P("Landing", a[1] - 3.5, a[1] + 3.5, y - 1, y, a[2] - 3.5, a[2] + 3.5, TILE)
-		rampPart(f, Vector3.new(ox + a[1], oy + y, oz + a[2]), Vector3.new(ox + b[1], oy + y - 10, oz + b[2]), 7, TILE, SP)
-		y = y - 10
-	end
 
 	local terrain = Workspace:FindFirstChildOfClass("Terrain")
 	local function fillWater(cx, cy, cz, sx, sy, sz)
@@ -1141,7 +1092,7 @@ local function buildPool(dirIdx)
 	poolZ = Zr
 end
 
---// ================= LIGHTING =================
+--// ================= LIGHTING MANAGER =================
 local LIGHT_PROPS = {"Ambient", "OutdoorAmbient", "Brightness", "ClockTime", "FogColor", "FogStart", "FogEnd",
 	"GlobalShadows", "ExposureCompensation", "EnvironmentDiffuseScale", "EnvironmentSpecularScale"}
 
@@ -1193,26 +1144,6 @@ local function applyLighting()
 	set("ExposureCompensation", look.ex)
 end
 
-local function lookStep(dt, target)
-	if not look then return end
-	local a = math.min(1, dt * 2.5)
-	look.amb = look.amb:Lerp(target.amb, a)
-	look.fog = look.fog:Lerp(target.fog, a)
-	look.tint = look.tint:Lerp(target.tint, a)
-	look.fs = look.fs + (target.fs - look.fs) * a
-	look.fe = look.fe + (target.fe - look.fe) * a
-	look.ex = look.ex + (target.ex - look.ex) * a
-	pcall(function()
-		Lighting.Ambient = look.amb
-		Lighting.OutdoorAmbient = look.amb
-		Lighting.FogColor = look.fog
-		Lighting.FogStart = look.fs
-		Lighting.FogEnd = look.fe
-		Lighting.ExposureCompensation = look.ex
-	end)
-	if savedLighting and savedLighting.cc then savedLighting.cc.TintColor = look.tint end
-end
-
 local function restoreLighting()
 	look = nil
 	if not savedLighting then return end
@@ -1235,58 +1166,116 @@ local function clearWater()
 	waterFills, savedWater = {}, nil
 end
 
---// ================= NOTICE & OVERLAY =================
-local function showLoadedNotice()
-	task.spawn(function()
-		local cam = Workspace.CurrentCamera
-		local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
-		local gui = Instance.new("ScreenGui")
-		gui.Name = "BR_Notice"
-		gui.IgnoreGuiInset = true
-		gui.ResetOnSpawn = false
-		gui.DisplayOrder = 999998
-		parentGui(gui)
-		noticeGui = gui
+--// ================= START / CLEANUP SEQUENCE =================
+startSequence = function()
+	if inBackrooms or busy then return end
+	busy = true
+	local _, _, hrp = getChar()
+	if not hrp then busy = false return end
 
-		local size = math.clamp(math.floor(vp.X / 30), 16, 34)
-		local bar = Instance.new("Frame")
-		bar.AnchorPoint = Vector2.new(0.5, 0)
-		bar.Size = UDim2.new(0.84, 0, 0, size * 2.4)
-		bar.Position = UDim2.new(0.5, 0, 0, -120)
-		bar.BackgroundColor3 = Color3.new(0, 0, 0)
-		bar.BackgroundTransparency = 0.35
-		bar.BorderSizePixel = 0
-		bar.Parent = gui
-		local stroke = Instance.new("UIStroke")
-		stroke.Thickness = 2
-		stroke.Color = Color3.fromRGB(215, 195, 100)
-		stroke.Parent = bar
+	inBackrooms = true
+	origFov = Workspace.CurrentCamera.FieldOfView
 
-		local lbl = Instance.new("TextLabel")
-		lbl.BackgroundTransparency = 1
-		lbl.Size = UDim2.new(1, -20, 1, -10)
-		lbl.Position = UDim2.new(0, 10, 0, 5)
-		lbl.Font = Enum.Font.Arcade
-		lbl.Text = "Backrooms Has Been Loaded. Goodluck Wanderer"
-		lbl.TextColor3 = Color3.new(1, 1, 1)
-		lbl.TextStrokeTransparency = 0.3
-		lbl.TextScaled = true
-		lbl.Parent = bar
-		local lim = Instance.new("UITextSizeConstraint")
-		lim.MaxTextSize = size
-		lim.Parent = lbl
+	local s = makeSound(INTRO_SOUND_ID, 1, false)
+	s:Play()
+	s.Ended:Connect(function() s:Destroy() end)
 
-		local tin = TweenService:Create(bar, TweenInfo.new(0.7, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, 0, 36)})
-		tin:Play()
-		tin.Completed:Wait()
-		task.wait(5)
-		if not alive then return end
-		local tout = TweenService:Create(bar, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {Position = UDim2.new(0.5, 0, 0, -120)})
-		tout:Play()
-		tout.Completed:Wait()
-		gui:Destroy()
-		noticeGui = nil
-	end)
+	if rootFolder then rootFolder:Destroy() end
+	rootFolder = Instance.new("Folder")
+	rootFolder.Name = "BackroomsFolder"
+	rootFolder.Parent = Workspace
+
+	local r = math.random()
+	if r < HOUSE_CHANCE then
+		buildHouse(math.random(1, 4))
+		curArea = "house"
+	elseif r < HOUSE_CHANCE + MEGA_CHANCE then
+		buildMega(math.random(1, 4))
+		curArea = "mega"
+	elseif r < HOUSE_CHANCE + MEGA_CHANCE + POOL_CHANCE then
+		buildPool(math.random(1, 4))
+		curArea = "pool"
+	else
+		zone = {x0 = -3, x1 = 3, z0 = -3, z1 = -3, h = WALL_H}
+		curArea = "back"
+	end
+
+	applyLighting()
+	hrp.CFrame = CFrame.new(BASE + Vector3.new(0, 5, 0))
+
+	if ambience then ambience:Destroy() end
+	ambience = makeSound(AMBIENT_SOUND_ID, 0.4, true)
+	ambience:Play()
+
+	busy = false
 end
 
-print("Backrooms v3.5 loaded successfully!")
+cleanupBackrooms = function()
+	inBackrooms = false
+	if rootFolder then rootFolder:Destroy() rootFolder = nil end
+	if ambience then ambience:Destroy() ambience = nil end
+	restoreLighting()
+	clearWater()
+	cells = {}
+	zone, mega, poolZ = nil, nil, nil
+	local _, _, hrp = getChar()
+	if hrp then hrp.CFrame = hrp.CFrame + Vector3.new(0, 50, 0) end
+end
+
+--// ================= NOCLIP DETECTION LOOP (FIXED) =================
+local lastNoclipCheck = 0
+track(RunService.Heartbeat:Connect(function(dt)
+	if not alive or inBackrooms or busy then return end
+	local _, hum, hrp = getChar()
+	if not hum or not hrp then return end
+
+	local moving = hum.MoveDirection.Magnitude > 0.1
+	local now = tick()
+	
+	if now - lastNoclipCheck >= 1 then
+		lastNoclipCheck = now
+		
+		-- Random tick chance
+		if math.random() < TICK_CHANCE then
+			startSequence()
+			return
+		end
+		
+		-- Wall collision check (50% chance when walking into a wall)
+		if moving and WALL_CHANCE > 0 then
+			local rayParams = RaycastParams.new()
+			rayParams.FilterType = Enum.RaycastFilterType.Exclude
+			rayParams.IgnoreWater = true
+			if player.Character then
+				rayParams.FilterDescendantsInstances = {player.Character}
+			end
+			
+			local rayDir = hrp.CFrame.LookVector * 3
+			local result = Workspace:Raycast(hrp.Position, rayDir, rayParams)
+			
+			if result and result.Instance and result.Instance.Anchored then
+				if math.random() < WALL_CHANCE then
+					startSequence()
+				end
+			end
+		end
+	end
+
+	if inBackrooms then
+		local p = hrp.Position - BASE
+		local cx, cz = math.round(p.X / CELL), math.round(p.Z / CELL)
+		streamCells(cx, cz, 4)
+		updateFlicker(now, cx, cz)
+	end
+end))
+
+-- Stop hook for live reloading
+env.__BACKROOMS_STOP = function()
+	alive = false
+	for _, c in ipairs(conns) do c:Disconnect() end
+	cleanupBackrooms()
+	if noticeGui then noticeGui:Destroy() end
+	print("Backrooms stopped.")
+end
+
+print("Backrooms v3.6 loaded successfully with functional noclip wall detection!")
