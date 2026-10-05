@@ -2795,7 +2795,6 @@ local function bindCamera()
 	RunService:BindToRenderStep("BR_Cam", Enum.RenderPriority.Camera.Value + 1, camStep)
 end
 
-local function unbindCamera()
 	pcall(function() RunService:UnbindFromRenderStep("BR_Cam") end)
 	local cam = Workspace.CurrentCamera
 	if cam and origFov then cam.FieldOfView = origFov end
