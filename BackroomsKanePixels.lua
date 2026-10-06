@@ -1,3461 +1,888 @@
---[[
-	BACKROOMS NOCLIP v8  |  LocalScript (client-sided)  |  Delta compatible
-	FIX: v7 had too many top level variables (Luau limit) so it never started ("attempt to call a nil value").
-	Everything is now grouped into tables / blocks, same features + new Habitable Zone upgrades.
+-- ============================================================
+--  BACKROOMS - Client-side LocalScript (Delta / Executor)
+--  Paste into a LocalScript and execute.
+-- ============================================================
 
-	- every 1s: 10% chance to noclip (only the part you stand on loses collision)
-	- walking into a wall: 50% chance (only that wall loses collision)
-	- VHS intro -> infinite backrooms, VHS camcorder overlay STAYS ON + found-footage camera bob
-	- built-in materials only (no textures, NO fabric): change them in the MATERIALS block
-	- "Open Flashlight" button (click sound), door open sound
-	- PoolRooms: 20% chance, far from the start, infinite sideways AND infinite floors, realistic swimmable water
-	- big maps: mega room, atrium tower, escalator hall, the VERY BIG + TALL 5-floor GRAND HALL (no barriers)
-	- portal door (10225195309): "Open Door" -> black screen "Habitable Zone" -> Level 1
-	- LEVEL 1 / HABITABLE ZONE: very detailed abandoned concrete garage (cars, pillars, pipes, cracks, puddles,
-	  signs, steel doors...) with BLACKOUTS: every 20s the lights flicker and die for 20s (sound 78704114462031),
-	  you need your flashlight to see
-	- respawn (reset) = back to the normal game
-]]
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting         = game:GetService("Lighting")
+local TweenService     = game:GetService("TweenService")
+local InsertService    = game:GetService("InsertService")
+local Debris           = game:GetService("Debris")
+local Workspace        = game:GetService("Workspace")
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
-local Lighting = game:GetService("Lighting")
-local SoundService = game:GetService("SoundService")
-local InsertService = game:GetService("InsertService")
-local TweenService = game:GetService("TweenService")
+local player    = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local camera    = Workspace.CurrentCamera
+local char      = player.Character or player.CharacterAdded:Wait()
+local humanoid  = char:WaitForChild("Humanoid")
+local rootPart  = char:WaitForChild("HumanoidRootPart")
 
-local player = Players.LocalPlayer
-while not player do task.wait() player = Players.LocalPlayer end
-
-local env = (getgenv and getgenv()) or _G
-if env.__BACKROOMS_STOP then pcall(env.__BACKROOMS_STOP) end
-
---// ================= CONFIG =================
-local ID = {
-	intro = 139682612041479,
-	ambient = 137406302438919,      -- backrooms ambient
-	poolAmbient = 94241101968368,   -- PoolRooms ambient (only plays in the PoolRooms)
-	walkBack = 89575970505811,      -- walking on backrooms floor
-	walkPool = 96516907071037,      -- walking on poolrooms floor
-	door = 125209584906878,         -- plays when you open a door
-	flash = 128570293170805,        -- plays when you open / close the flashlight
-	blackout = 78704114462031,      -- plays the moment the lights go out in the Habitable Zone
-	chair = 74698525718385,
-	doorAsset = 9343670755,
-	escalator = 18861464725,
-	portal = 10225195309,           -- the door that leads to Level 1 (Habitable Zone)
+-- ============================================================
+--  CONFIG
+-- ============================================================
+local CFG = {
+    NoclipChancePerSecond  = 0.10,
+    NoclipChanceWall       = 0.50,
+    PoolRoomsChance        = 0.20,
+    HabitableChance        = 0.05,
+    BigRoomChance          = 0.10,
+    ChunkSize              = 120,
+    CellSize               = 20,
+    WallHeight             = 12,
+    RenderDistance         = 3,      -- chunks in each direction
+    LightFlickerEvery      = {20, 45},
+    BlackoutDuration       = 20,
 }
 
-local CH = {
-	TICK = 0.10,             -- chance per second to noclip
-	WALL = 0.50,             -- chance when walking into a wall
-	HOUSE = 0.10,            -- chance a house exists in the backrooms
-	MEGA = 0.45,             -- chance of a big multi-floor map
-	POOL = 0.20,             -- 20% chance the PoolRooms exist at all (far from the start)
-	PORTAL_ENABLE = 0.85,    -- chance the portal door can spawn in a run
-	PORTAL = 0.004,          -- chance per solid wall piece to carry the portal door
-	ARROW = 0.05,            -- chance a wall piece has an arrow pointing to the PoolRooms
-	DOOR = 0.04,             -- chance per zone-border wall piece to be a door
-	WINDOW = 0.015,          -- windows are rare
-	PIT = 0.025,             -- square floor pits in normal cells
-	SHAFT = 0.02,            -- square ceiling shafts in normal cells
-	PROP = 0.04,             -- copied game models (backrooms only)
-	CHAIR = 0.03,            -- chairs (backrooms only)
-	BLACKOUT_ENABLE = 0.85,  -- chance the Habitable Zone has blackouts in a run
+local SOUNDS = {
+    Noclip            = "rbxassetid://139682612041479",
+    BackroomsAmbient  = "rbxassetid://137406302438919",
+    BackroomsStep     = "rbxassetid://89575970505811",
+    PoolRoomsStep     = "rbxassetid://96516907071037",
+    PoolRoomsAmbient  = "rbxassetid://94241101968368",
+    DoorOpen          = "rbxassetid://125209584906878",
+    Flashlight        = "rbxassetid://128570293170805",
+    Blackout          = "rbxassetid://78704114462031",
 }
 
--- MATERIALS (all built-in, change any of these. never fabric)
-local MAT_WALL   = Enum.Material.Plastic   -- backrooms walls
-local CARPET_MAT = Enum.Material.Concrete  -- backrooms carpet
-local MAT_POOL   = Enum.Material.Marble    -- PoolRooms tiles / walls / ceilings
-local MAT_HAB    = Enum.Material.Concrete  -- Habitable Zone (Level 1)
-
-local HOUSE_MODEL_NAME = nil             -- exact name of the house model in your game (nil = auto-detect)
-local LIGHT_BRIGHTNESS = 0.55            -- backrooms ceiling light brightness (lower = darker)
-local CEILING_GRID     = true            -- ceiling tile lines
-local CAMERA_BOB       = true            -- found-footage walking camera
-local STEP_VOLUME      = 3               -- walking sounds loudness (Roblox allows up to 10)
-local MUTE_DEFAULT_STEPS = true          -- silence Roblox's default walking sound inside the backrooms
-local T_TITLE, T_SUB, T_END = 3, 6, 11   -- seconds: BACKROOMS / Produced By Hecker / screen vanishes
-local STOP_INTRO_ON_REVEAL = true
-local BUILD_BUDGET     = 0.008           -- seconds per frame spent generating (higher = faster generation, lower fps)
-local HAB_CYCLE, HAB_OUT, HAB_WARN = 20, 20, 2.5 -- Habitable Zone: lights on 20s, flicker, off 20s
-
-local PH               = 17              -- PoolRooms ceiling height
-local PLH              = PH + 3          -- floor-to-floor height of the PoolRooms (stacked floors)
-
-local BASE = Vector3.new(0, 3000, 0)     -- where the backrooms live
-local HAB  = Vector3.new(0, 6000, 0)     -- where Level 1 (Habitable Zone) lives
-local HAB_H = 11                         -- Level 1 ceiling height
-local CELL, WALL_H, WALL_T = 12, 13, 0.8
-local FH = WALL_H + 1                    -- floor-to-floor height in the big backrooms maps
-local GFH = 22                           -- floor-to-floor height in the GRAND HALL (very tall)
-local DOOR_W, DOOR_H = 7, 9.5
-local R = 6                              -- zone size in cells
-local LOAD_R, UNLOAD_R = 8, 11
-local DIRS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}}
-
-local C_BOARD = Color3.fromRGB(222, 214, 178) -- cream baseboards like the photos
-local DOOR_TRIM = Color3.fromRGB(78, 52, 34)  -- dark wood frame
-
--- backrooms looks copied from the photos
-local PALETTES = {
-	{wall = Color3.fromRGB(224, 202, 96),  carpet = Color3.fromRGB(176, 156, 112), ceil = Color3.fromRGB(205, 198, 160), off = 0.10},
-	{wall = Color3.fromRGB(202, 206, 130), carpet = Color3.fromRGB(150, 142, 112), ceil = Color3.fromRGB(200, 200, 170), off = 0.12},
-	{wall = Color3.fromRGB(236, 226, 152), carpet = Color3.fromRGB(222, 214, 170), ceil = Color3.fromRGB(222, 220, 185), off = 0.12},
-	{wall = Color3.fromRGB(176, 146, 62),  carpet = Color3.fromRGB(98, 88, 72),    ceil = Color3.fromRGB(150, 130, 90),  off = 0.30},
+local MODEL_IDS = {
+    Chair         = 74698525718385,
+    Door          = 9343670755,
+    HabitableDoor = 10225195309,
 }
 
--- PoolRooms colours per floor (soft, not bright). Floor numbers repeat every 3
-local POOLPAL = {
-	{floor = Color3.fromRGB(196, 194, 188), wall = Color3.fromRGB(204, 202, 196), ceil = Color3.fromRGB(184, 182, 176), basin = Color3.fromRGB(150, 188, 192)},
-	{floor = Color3.fromRGB(172, 198, 186), wall = Color3.fromRGB(182, 206, 194), ceil = Color3.fromRGB(158, 182, 170), basin = Color3.fromRGB(124, 190, 172)},
-	{floor = Color3.fromRGB(188, 204, 208), wall = Color3.fromRGB(198, 212, 216), ceil = Color3.fromRGB(172, 188, 192), basin = Color3.fromRGB(132, 196, 206)},
+-- ============================================================
+--  STATE
+-- ============================================================
+local State = {
+    inBackrooms   = false,
+    inPoolRooms   = false,
+    inHabitable   = false,
+    transitioning = false,
+    flashOn       = false,
+    generatedChunks = {},
+    pooledModels  = {},
+    lights        = {},
+    doors         = {},
+    originalLighting = {
+        Brightness = Lighting.Brightness,
+        Ambient    = Lighting.Ambient,
+        FogEnd     = Lighting.FogEnd,
+        FogStart   = Lighting.FogStart,
+        ClockTime  = Lighting.ClockTime,
+    },
 }
-local P_FLOOR, P_WALL, P_CEIL, P_BASIN = POOLPAL[1].floor, POOLPAL[1].wall, POOLPAL[1].ceil, POOLPAL[1].basin
-local P_GLOW = Color3.fromRGB(176, 196, 192)
 
--- look of each area (lerped while you walk between them)
-local LOOKS = {
-	back    = {amb = Color3.fromRGB(26, 23, 12),  fog = Color3.fromRGB(10, 9, 4),     tint = Color3.fromRGB(255, 240, 200), fs = 12, fe = 92,  ex = -0.3},
-	mega    = {amb = Color3.fromRGB(26, 23, 12),  fog = Color3.fromRGB(10, 9, 4),     tint = Color3.fromRGB(255, 240, 200), fs = 30, fe = 320, ex = -0.3},
-	pool    = {amb = Color3.fromRGB(58, 76, 70),  fog = Color3.fromRGB(62, 88, 80),   tint = Color3.fromRGB(205, 236, 225), fs = 20, fe = 115, ex = -0.12},
-	hab     = {amb = Color3.fromRGB(38, 40, 44),  fog = Color3.fromRGB(14, 16, 18),   tint = Color3.fromRGB(226, 233, 242), fs = 14, fe = 105, ex = -0.2},
-	habDark = {amb = Color3.fromRGB(2, 2, 3),     fog = Color3.fromRGB(1, 1, 2),      tint = Color3.fromRGB(200, 210, 225), fs = 4,  fe = 70,  ex = -0.45},
-}
-
-local HOUSE_WORDS = {"house", "home", "cabin", "mansion", "cottage", "apartment"}
-local BAD_WORDS = {"wall", "floor", "ceiling", "roof", "baseplate", "terrain", "ground", "map", "spawn", "lobby", "skybox", "border", "barrier", "road", "street", "water"}
-
---@@STATE@@
-
-local alive = true
-local conns = {}
-local function track(c) conns[#conns + 1] = c return c end
-
-local startSequence, cleanupBackrooms, goHabitable
-
---// ================= GENERAL HELPERS =================
-local function getChar()
-	local c = player.Character
-	if not c then return end
-	local hum = c:FindFirstChildOfClass("Humanoid")
-	local hrp = c:FindFirstChild("HumanoidRootPart")
-	if hum and hrp and hum.Health > 0 then return c, hum, hrp end
+-- ============================================================
+--  UTIL
+-- ============================================================
+local function rng(a, b)
+    return math.random() * (b - a) + a
 end
 
-local function shade(c, k)
-	return Color3.new(math.clamp(c.R * k, 0, 1), math.clamp(c.G * k, 0, 1), math.clamp(c.B * k, 0, 1))
+local function chance(p)
+    return math.random() < p
 end
 
-local function nameHas(n, words)
-	n = n:lower()
-	for _, w in ipairs(words) do
-		if n:find(w, 1, true) then return true end
-	end
-	return false
+local function playSound(id, parent, vol, looped)
+    local s = Instance.new("Sound")
+    s.SoundId = id
+    s.Volume  = vol or 1
+    s.Looped  = looped or false
+    s.Parent  = parent or Workspace
+    s:Play()
+    return s
 end
 
-local function rnd(x, z, salt)
-	local n = (x * 73856093 + z * 19349663 + salt * 83492791 + SEED * 2654435761) % 4294967296
-	n = bit32.bxor(n, bit32.rshift(n, 15))
-	n = (n * 1664525 + 1013904223) % 4294967296
-	n = bit32.bxor(n, bit32.rshift(n, 13))
-	n = (n * 1664525 + 1013904223) % 4294967296
-	return n / 4294967296
+local function yieldLoad(id)
+    local ok, model = pcall(function()
+        return InsertService:LoadAsset(id)
+    end)
+    if ok and model then
+        return model
+    end
+    return nil
 end
 
-local function ckey(x, z) return (x + 50000) * 100000 + (z + 50000) end
-local function ckey3(x, z, lv) return ckey(x, z) * 100 + lv + 50 end
-local function cellPos(x, z) return BASE + Vector3.new(x * CELL, 0, z * CELL) end
-local function habPos(x, z) return HAB + Vector3.new(x * CELL, 0, z * CELL) end
-local function inRect(r, x, z)
-	return r ~= nil and x >= r.x0 and x <= r.x1 and z >= r.z0 and z <= r.z1
-end
-local function inZone(x, z)
-	return inRect(zone, x, z) or inRect(mega, x, z)
-end
-
-local function makeSound(id, vol, looped)
-	local s = Instance.new("Sound")
-	s.SoundId = "rbxassetid://" .. id
-	s.Volume = vol
-	s.Looped = looped
-	s.Parent = SoundService
-	return s
-end
-
--- one-shot sound effect
-local function playSfx(id, vol)
-	pcall(function()
-		local s = makeSound(id, vol or 2, false)
-		s:Play()
-		task.delay(8, function() pcall(function() s:Destroy() end) end)
-	end)
-end
-
-local function parentGui(gui)
-	pcall(function() gui.Parent = (gethui and gethui()) or game:GetService("CoreGui") end)
-	if not gui.Parent then gui.Parent = player:WaitForChild("PlayerGui") end
-end
-
-local function mk(parent, name, size, cf, color, mat)
-	local p = Instance.new("Part")
-	p.Name = name
-	p.Anchored = true
-	p.Size = size
-	p.CFrame = cf
-	p.Color = color
-	p.Material = mat
-	p.TopSurface = Enum.SurfaceType.Smooth
-	p.BottomSurface = Enum.SurfaceType.Smooth
-	p.Parent = parent
-	return p
-end
-
--- ramp whose top surface runs exactly from point a to point b
-local function rampPart(parent, a, b, width, color, mat)
-	local thick = 1
-	local rot = CFrame.lookAt(Vector3.zero, b - a)
-	local center = (a + b) / 2 - rot.UpVector * (thick / 2)
-	return mk(parent, "Ramp", Vector3.new(width, thick, (b - a).Magnitude), CFrame.new(center) * rot, color, mat)
-end
-
--- slab with a square hole in the middle (returns the 4 parts)
-local function holeBoxes(parent, cx, cz, hs, yc, thick, color, mat)
-	local strip = (CELL - hs) / 2
-	return {
-		mk(parent, "Part", Vector3.new(CELL, thick, strip), CFrame.new(cx, yc, cz + hs / 2 + strip / 2), color, mat),
-		mk(parent, "Part", Vector3.new(CELL, thick, strip), CFrame.new(cx, yc, cz - hs / 2 - strip / 2), color, mat),
-		mk(parent, "Part", Vector3.new(strip, thick, hs), CFrame.new(cx - hs / 2 - strip / 2, yc, cz), color, mat),
-		mk(parent, "Part", Vector3.new(strip, thick, hs), CFrame.new(cx + hs / 2 + strip / 2, yc, cz), color, mat),
-	}
-end
-
--- real stairs (solid steps) running +X for 24 studs
-local function buildStairs(parent, xs, y0, zc, rise, steps, width, color, mat)
-	local h = rise / steps
-	local tread = 24 / steps
-	for i = 0, steps - 1 do
-		local th = h * (i + 1)
-		mk(parent, "Step", Vector3.new(tread, th, width), CFrame.new(xs + tread * (i + 0.5), y0 + th / 2, zc), color, mat)
-	end
-end
-
---// ================= MODEL HELPERS =================
-local function aabb(model)
-	local mnx, mny, mnz = math.huge, math.huge, math.huge
-	local mxx, mxy, mxz = -math.huge, -math.huge, -math.huge
-	local found = false
-	for _, p in ipairs(model:GetDescendants()) do
-		if p:IsA("BasePart") then
-			found = true
-			local cf, s = p.CFrame, p.Size
-			local r, u, l = cf.RightVector, cf.UpVector, cf.LookVector
-			local ex = (math.abs(r.X) * s.X + math.abs(u.X) * s.Y + math.abs(l.X) * s.Z) / 2
-			local ey = (math.abs(r.Y) * s.X + math.abs(u.Y) * s.Y + math.abs(l.Y) * s.Z) / 2
-			local ez = (math.abs(r.Z) * s.X + math.abs(u.Z) * s.Y + math.abs(l.Z) * s.Z) / 2
-			local pos = cf.Position
-			mnx = math.min(mnx, pos.X - ex) mny = math.min(mny, pos.Y - ey) mnz = math.min(mnz, pos.Z - ez)
-			mxx = math.max(mxx, pos.X + ex) mxy = math.max(mxy, pos.Y + ey) mxz = math.max(mxz, pos.Z + ez)
-		end
-	end
-	if not found then return Vector3.zero, Vector3.zero, false end
-	return Vector3.new(mnx, mny, mnz), Vector3.new(mxx, mxy, mxz), true
-end
-
-local function applyCF(model, cf)
-	for _, p in ipairs(model:GetDescendants()) do
-		if p:IsA("BasePart") then p.CFrame = cf * p.CFrame end
-	end
-end
-
--- non-uniform scale around the origin (model must be centered at origin)
-local function stretch(model, scale)
-	for _, p in ipairs(model:GetDescendants()) do
-		if p:IsA("BasePart") then
-			local cf, sz = p.CFrame, p.Size
-			local nx = (cf.RightVector * scale).Magnitude * sz.X
-			local ny = (cf.UpVector * scale).Magnitude * sz.Y
-			local nz = (cf.LookVector * scale).Magnitude * sz.Z
-			p.CFrame = CFrame.new(cf.Position * scale) * (cf - cf.Position)
-			pcall(function()
-				p.Size = Vector3.new(math.clamp(nx, 0.05, 400), math.clamp(ny, 0.05, 400), math.clamp(nz, 0.05, 400))
-			end)
-		end
-	end
-end
-
-local function sanitize(m, keepLights)
-	local kill = {}
-	for _, d in ipairs(m:GetDescendants()) do
-		if d:IsA("LuaSourceContainer") or d:IsA("Sound") or d:IsA("ProximityPrompt") or d:IsA("ClickDetector")
-			or d:IsA("JointInstance") or d:IsA("WeldConstraint") or d:IsA("Constraint") or d:IsA("BodyMover")
-			or d:IsA("Humanoid") or ((not keepLights) and d:IsA("Light")) then
-			kill[#kill + 1] = d
-		elseif d:IsA("BasePart") then
-			d.Anchored = true
-			d.CanTouch = false
-			d.AssemblyLinearVelocity = Vector3.zero
-			d.AssemblyAngularVelocity = Vector3.zero
-		end
-	end
-	for _, d in ipairs(kill) do pcall(function() d:Destroy() end) end
-	if m:IsA("Model") then m.PrimaryPart = nil end
-end
-
-local function finishTemplate(m, keepLights, capDim)
-	sanitize(m, keepLights)
-	local mn, mx, found = aabb(m)
-	if not found then
-		m:Destroy()
-		return nil
-	end
-	applyCF(m, CFrame.new(-(mn + mx) / 2))
-	if capDim then
-		local s = mx - mn
-		local md = math.max(s.X, s.Y, s.Z)
-		if md > capDim then
-			local k = capDim / md
-			stretch(m, Vector3.new(k, k, k))
-		end
-	end
-	return m
-end
-
-local function box(parent, name, sx, sy, sz, x, y, z, color, mat)
-	local p = Instance.new("Part")
-	p.Name = name
-	p.Anchored = true
-	p.Size = Vector3.new(sx, sy, sz)
-	p.CFrame = CFrame.new(x, y, z)
-	p.Color = color
-	p.Material = mat or Enum.Material.Plastic
-	p.TopSurface = Enum.SurfaceType.Smooth
-	p.BottomSurface = Enum.SurfaceType.Smooth
-	p.Parent = parent
-	return p
-end
-
---// ================= TEMPLATES, DOOR MODELS, HOUSE =================
-local collectTemplates, loadAsset, loadChair, loadDoor, loadPortal, buildHouse
-do
-	local function buildFallbackChair()
-		local m = Instance.new("Model")
-		m.Name = "Chair"
-		local col, mat = Color3.fromRGB(70, 62, 55), Enum.Material.Metal
-		box(m, "Seat", 2.2, 0.25, 2.2, 0, 1.7, 0, Color3.fromRGB(120, 90, 55), Enum.Material.Wood)
-		box(m, "Back", 2.2, 2, 0.25, 0, 2.9, -1, Color3.fromRGB(120, 90, 55), Enum.Material.Wood)
-		for _, sx in ipairs({-0.95, 0.95}) do
-			for _, sz in ipairs({-0.95, 0.95}) do
-				box(m, "Leg", 0.2, 1.7, 0.2, sx, 0.85, sz, col, mat)
-			end
-		end
-		return m
-	end
-
-	local function buildFallbackDoor()
-		local m = Instance.new("Model")
-		m.Name = "Door"
-		box(m, "Slab", 6.3, 9.1, 0.5, 0, 4.55, 0, Color3.fromRGB(86, 58, 38), Enum.Material.Wood)
-		box(m, "Handle", 0.35, 0.35, 0.8, 2.4, 4.3, 0, Color3.fromRGB(190, 190, 190), Enum.Material.Metal)
-		return m
-	end
-
-	local function buildFallbackHouse()
-		local m = Instance.new("Model")
-		m.Name = "House"
-		local W, D, H = 26, 22, 10.5
-		local wallC, wood = Color3.fromRGB(225, 220, 205), Color3.fromRGB(130, 95, 60)
-		box(m, "Floor", W, 1, D, 0, 0.5, 0, wood, Enum.Material.Wood)
-		box(m, "Back", W, H, 1, 0, 1 + H / 2, D / 2, wallC)
-		box(m, "Left", 1, H, D, -W / 2, 1 + H / 2, 0, wallC)
-		box(m, "Right", 1, H, D, W / 2, 1 + H / 2, 0, wallC)
-		local side = (W - 5) / 2
-		box(m, "FrontL", side, H, 1, -(2.5 + side / 2), 1 + H / 2, -D / 2, wallC)
-		box(m, "FrontR", side, H, 1, (2.5 + side / 2), 1 + H / 2, -D / 2, wallC)
-		box(m, "Lintel", 5, H - 8, 1, 0, 1 + 8 + (H - 8) / 2, -D / 2, wallC)
-		box(m, "Roof", W + 2, 1, D + 2, 0, 1 + H + 0.5, 0, Color3.fromRGB(90, 70, 60), Enum.Material.Slate)
-		box(m, "Divider", 1, H, D * 0.6, 2, 1 + H / 2, D / 2 - D * 0.3, wallC)
-		box(m, "Table", 4, 0.4, 2.5, -7, 3, -4, wood, Enum.Material.Wood)
-		for _, tx in ipairs({-8.6, -5.4}) do
-			for _, tz in ipairs({-5, -3}) do
-				box(m, "TLeg", 0.3, 2, 0.3, tx, 2, tz, wood, Enum.Material.Wood)
-			end
-		end
-		for _, lx in ipairs({-6, 8}) do
-			local bulb = box(m, "Bulb", 2, 0.3, 2, lx, H + 0.7, 0, Color3.fromRGB(255, 244, 214), Enum.Material.Neon)
-			local pl = Instance.new("PointLight")
-			pl.Range, pl.Brightness, pl.Shadows = 30, 1.0, false
-			pl.Color = Color3.fromRGB(255, 238, 200)
-			pl.Parent = bulb
-		end
-		return m
-	end
-
-	-- loads a door model, stands it upright and fits it to a doorway. returns template, width, height
-	local function loadFitDoor(id)
-		local tpl
-		local wrapper = loadAsset(id)
-		if wrapper then
-			wrapper.Name = "Door"
-			tpl = finishTemplate(wrapper, false, nil)
-		end
-		if not tpl then tpl = finishTemplate(buildFallbackDoor(), false, nil) end
-		if not tpl then return nil end
-
-		-- height on Y
-		local mn, mx = aabb(tpl)
-		local s = mx - mn
-		if s.X >= s.Y and s.X >= s.Z then
-			applyCF(tpl, CFrame.Angles(0, 0, math.pi / 2))
-		elseif s.Z >= s.Y and s.Z >= s.X then
-			applyCF(tpl, CFrame.Angles(math.pi / 2, 0, 0))
-		end
-		mn, mx = aabb(tpl) s = mx - mn
-		-- width on X, thickness on Z
-		if s.Z > s.X then
-			applyCF(tpl, CFrame.Angles(0, math.pi / 2, 0))
-			mn, mx = aabb(tpl) s = mx - mn
-		end
-		-- fit the doorway
-		stretch(tpl, Vector3.new((DOOR_W - 0.7) / s.X, (DOOR_H - 0.4) / s.Y, math.min(1, 0.5 / s.Z)))
-		mn, mx = aabb(tpl)
-		applyCF(tpl, CFrame.new(-(mn + mx) / 2))
-		local fs = mx - mn
-		return tpl, fs.X, fs.Y
-	end
-
-	local function findHouseModel()
-		local best, bestCount = nil, 0
-		for _, d in ipairs(Workspace:GetDescendants()) do
-			if d:IsA("Model") and not Players:GetPlayerFromCharacter(d) and not d:FindFirstChildWhichIsA("Humanoid")
-				and not (rootFolder and d:IsDescendantOf(rootFolder)) then
-				local match
-				if HOUSE_MODEL_NAME then match = (d.Name == HOUSE_MODEL_NAME) else match = nameHas(d.Name, HOUSE_WORDS) end
-				if match then
-					local n = 0
-					for _, x in ipairs(d:GetDescendants()) do
-						if x:IsA("BasePart") then n += 1 end
-					end
-					if n >= 4 and n > bestCount then best, bestCount = d, n end
-				end
-			end
-		end
-		return best
-	end
-
-	collectTemplates = function()
-		templates = {}
-		local cands, chosen = {}, {}
-		for _, d in ipairs(Workspace:GetDescendants()) do
-			if d:IsA("Model") and d ~= player.Character and not (rootFolder and d:IsDescendantOf(rootFolder)) then
-				if not d:FindFirstChildWhichIsA("Humanoid") and not Players:GetPlayerFromCharacter(d)
-					and not nameHas(d.Name, BAD_WORDS) and not nameHas(d.Name, HOUSE_WORDS)
-					and d:FindFirstChildWhichIsA("BasePart", true) then
-					local skip, a = false, d.Parent
-					while a and a ~= Workspace do
-						if chosen[a] then skip = true break end
-						a = a.Parent
-					end
-					if not skip then
-						local ok, s = pcall(function() return d:GetExtentsSize() end)
-						if ok and s then
-							local maxd, mind = math.max(s.X, s.Y, s.Z), math.min(s.X, s.Y, s.Z)
-							local plate = (maxd >= 18 and mind <= 2) or (s.Y < 1.2 and maxd > 10)
-							if maxd >= 0.8 and maxd <= 40 and not plate then
-								chosen[d] = true
-								cands[#cands + 1] = d
-							end
-						end
-					end
-				end
-			end
-			if #cands >= 500 then break end
-		end
-		for i = #cands, 2, -1 do
-			local j = math.random(1, i)
-			cands[i], cands[j] = cands[j], cands[i]
-		end
-		for i = 1, math.min(#cands, 24) do
-			local ok, c = pcall(function() return cands[i]:Clone() end)
-			if ok and c then
-				local t = finishTemplate(c, false, 14)
-				if t then templates[#templates + 1] = t end
-			end
-		end
-	end
-
-	loadAsset = function(id)
-		local objs
-		pcall(function() objs = game:GetObjects("rbxassetid://" .. id) end)
-		if not objs or #objs == 0 then
-			pcall(function()
-				local m = InsertService:LoadAsset(id)
-				objs = m:GetChildren()
-			end)
-		end
-		if objs and #objs > 0 then
-			local wrapper = Instance.new("Model")
-			for _, o in ipairs(objs) do pcall(function() o.Parent = wrapper end) end
-			return wrapper
-		end
-	end
-
-	loadChair = function()
-		chairTpl = nil
-		local tpl
-		local wrapper = loadAsset(ID.chair)
-		if wrapper then
-			wrapper.Name = "Chair"
-			tpl = finishTemplate(wrapper, false, nil)
-			if tpl then
-				local mn, mx = aabb(tpl)
-				local h = (mx - mn).Y
-				if h > 5.5 or h < 2.2 then
-					local k = 3.6 / math.max(h, 0.1)
-					stretch(tpl, Vector3.new(k, k, k))
-				end
-			end
-		end
-		if not tpl then tpl = finishTemplate(buildFallbackChair(), false, nil) end
-		chairTpl = tpl
-	end
-
-	loadDoor = function()
-		local t, w, h = loadFitDoor(ID.doorAsset)
-		doorTpl = t
-		if t then doorW, doorH = w, h end
-	end
-
-	loadPortal = function()
-		local t, w, h = loadFitDoor(ID.portal)
-		portalTpl = t
-		if t then portalW, portalH = w, h end
-	end
-
-	buildHouse = function(dirIdx)
-		local m
-		local src = findHouseModel()
-		if src then
-			local ok, c = pcall(function() return src:Clone() end)
-			if ok and c then m = finishTemplate(c, true, 70) end
-		end
-		if not m then m = finishTemplate(buildFallbackHouse(), true, nil) end
-		if not m then return end
-
-		local mn, mx = aabb(m)
-		local size = mx - mn
-		local ax = math.ceil(size.X / 2 / CELL) + 1
-		local az = math.ceil(size.Z / 2 / CELL) + 1
-		local dv = DIRS[dirIdx]
-		local dist = math.max(ax, az) + 4 + math.random(0, 3)
-		local hx, hz = dv[1] * dist, dv[2] * dist
-		local Z = {x0 = hx - ax, x1 = hx + ax, z0 = hz - az, z1 = hz + az, h = math.max(WALL_H, size.Y + 4)}
-
-		applyCF(m, CFrame.new(BASE.X + hx * CELL, BASE.Y + 0.08 + size.Y / 2, BASE.Z + hz * CELL))
-		m.Name = "House"
-		m.Parent = rootFolder
-
-		if Z.h > WALL_H + 0.2 then
-			local hh = Z.h - WALL_H
-			local xmin, xmax = BASE.X + (Z.x0 - 0.5) * CELL, BASE.X + (Z.x1 + 0.5) * CELL
-			local zmin, zmax = BASE.Z + (Z.z0 - 0.5) * CELL, BASE.Z + (Z.z1 + 0.5) * CELL
-			local cy = BASE.Y + WALL_H + hh / 2
-			local lx, lz = xmax - xmin, zmax - zmin
-			local wc = PALETTES[1].wall
-			mk(rootFolder, "Skirt", Vector3.new(lx + WALL_T, hh, WALL_T), CFrame.new((xmin + xmax) / 2, cy, zmin), wc, MAT_WALL)
-			mk(rootFolder, "Skirt", Vector3.new(lx + WALL_T, hh, WALL_T), CFrame.new((xmin + xmax) / 2, cy, zmax), wc, MAT_WALL)
-			mk(rootFolder, "Skirt", Vector3.new(WALL_T, hh, lz + WALL_T), CFrame.new(xmin, cy, (zmin + zmax) / 2), wc, MAT_WALL)
-			mk(rootFolder, "Skirt", Vector3.new(WALL_T, hh, lz + WALL_T), CFrame.new(xmax, cy, (zmin + zmax) / 2), wc, MAT_WALL)
-		end
-		zone = Z
-	end
-end
-
---// ================= ZONES + MAZE LAYOUT =================
--- each zone (R x R cells) picks a block size: 1 = tight maze corridors, 2 = normal corridors,
--- 3 = wide, 6 = huge open hall (mostly maze, some open spaces)
-local function regionInfo(rx, rz)
-	local k = ckey(rx, rz)
-	local c = regionCache[k]
-	if c then return c end
-	local s, pal
-	if rx == 0 and rz == 0 then
-		s, pal = 2, PALETTES[1]
-	else
-		local r = rnd(rx, rz, 40)
-		if r < 0.35 then s = 1 elseif r < 0.65 then s = 2 elseif r < 0.77 then s = 3 else s = 6 end
-		local q = rnd(rx, rz, 41)
-		if q < 0.50 then pal = PALETTES[1] elseif q < 0.68 then pal = PALETTES[2] elseif q < 0.84 then pal = PALETTES[3] else pal = PALETTES[4] end
-	end
-	c = {s = s, pal = pal}
-	regionCache[k] = c
-	return c
-end
-
--- the PoolRooms are one whole side of the map, far away from the start (infinite sideways, and infinite floors)
-local function isPoolCell(x, z)
-	if not poolCfg then return false end
-	local k = math.floor((poolCfg.axis == 1 and x or z) / R)
-	if poolCfg.sign == 1 then return k >= 2 end
-	return k <= -3
-end
-
--- PoolRooms zone types: "maze" (corridors, rooms, small pools), "hall" (big pool), "atrium" (tiers + skylight)
-local function poolRegion(rx, rz)
-	local k = ckey(rx, rz)
-	local c = poolRegionCache[k]
-	if c then return c end
-	local kind, s = "maze", 2
-	local v = rnd(rx, rz, 140)
-	local special = v < 0.4
-	if special then
-		for dx = -1, 1 do
-			for dz = -1, 1 do
-				if (dx ~= 0 or dz ~= 0) and rnd(rx + dx, rz + dz, 140) < v then special = false end
-			end
-		end
-	end
-	if special then
-		kind = (rnd(rx, rz, 141) < 0.5) and "atrium" or "hall"
-	else
-		local q = rnd(rx, rz, 142)
-		if q < 0.3 then s = 2 elseif q < 0.7 then s = 3 else s = 6 end
-	end
-	c = {kind = kind, s = s}
-	poolRegionCache[k] = c
-	return c
-end
-
-local function isSpecialCell(x, z)
-	return isPoolCell(x, z) and poolRegion(math.floor(x / R), math.floor(z / R)).kind ~= "maze"
-end
-
--- floors that collide with the big pool halls / atriums on floor 0 stay empty above/below them
-local function blockedLv(lv) return lv == -1 or lv == 1 or lv == 2 end
-
-local function adjSpecial(cx, cz, dir)
-	local ox, oz = cx, cz
-	if dir == 1 then ox = cx + 1 else oz = cz + 1 end
-	return isSpecialCell(cx, cz) or isSpecialCell(ox, oz)
-end
-
--- dir 1 = east edge of cell, dir 2 = north edge. returns 0 wall, 1 open, 2 doorway, 3 door
-local function edge(x, z, dir)
-	local ox, oz = x, z
-	if dir == 1 then ox = x + 1 else oz = z + 1 end
-	if inZone(x, z) or inZone(ox, oz) then return 1 end
-
-	local rx, rz = math.floor(x / R), math.floor(z / R)
-	local qx, qz = math.floor(ox / R), math.floor(oz / R)
-	local pa, pb = isPoolCell(x, z), isPoolCell(ox, oz)
-	local ls = (pa or pb) and LV * 977 or 0 -- every PoolRooms floor has its own layout
-	if rx ~= qx or rz ~= qz then
-		-- border between two zones
-		if pa or pb then
-			if LV ~= 0 and pa ~= pb then return 0 end
-			local r = rnd(x, z, 130 + dir + ls)
-			if r < 0.22 then return 1 end
-			if r < 0.55 then return 2 end
-			return 0
-		end
-		local r = rnd(x, z, 30 + dir)
-		if r < 0.15 then return 1 end
-		if r < 0.40 then return 2 end
-		if r < 0.40 + CH.DOOR then return doorTpl and 3 or 2 end
-		return 0
-	end
-
-	local s
-	if pa then
-		local info = poolRegion(rx, rz)
-		if info.kind ~= "maze" then return 1 end
-		s = info.s
-	else
-		s = regionInfo(rx, rz).s
-	end
-	local lx, lz = x - rx * R, z - rz * R
-	local mx, mz = lx + (dir == 1 and 1 or 0), lz + (dir == 2 and 1 or 0)
-	local ax, az = math.floor(lx / s), math.floor(lz / s)
-	local bx, bz = math.floor(mx / s), math.floor(mz / s)
-	if ax == bx and az == bz then return 1 end -- inside one block
-
-	local nb = R / s
-	local gx, gz = rx * nb + ax, rz * nb + az
-	local carve
-	if ax == nb - 1 and az == nb - 1 then carve = 0
-	elseif ax == nb - 1 then carve = 2
-	elseif az == nb - 1 then carve = 1
-	else carve = (rnd(gx, gz, 1 + s + ls) < 0.5) and 1 or 2 end
-	-- few extra openings => real maze with lots of dead ends
-	local open = (carve == dir) or (rnd(gx, gz, 10 + dir + s * 3 + ls) < 0.12)
-	if not open then return 0 end
-	if s == 1 then return (rnd(x, z, 20 + dir + ls) < 0.55) and 2 or 1 end
-	return 1
-end
-
-local function hasWindow(x, z, dir)
-	local ox, oz = x, z
-	if dir == 1 then ox += 1 else oz += 1 end
-	local boundary = math.floor(x / R) ~= math.floor(ox / R) or math.floor(z / R) ~= math.floor(oz / R)
-	return rnd(x, z, 80 + dir) < (boundary and CH.WINDOW * 2.5 or CH.WINDOW)
-end
-
--- a post is only needed at corners / wall ends, not on straight walls
-local function postNeeded(edgeFn, x, z)
-	local W = edgeFn(x, z, 2) ~= 1
-	local E = edgeFn(x + 1, z, 2) ~= 1
-	local S = edgeFn(x, z, 1) ~= 1
-	local N = edgeFn(x, z + 1, 1) ~= 1
-	if not (W or E or S or N) then return false end
-	if W and E and not N and not S then return false end
-	if N and S and not W and not E then return false end
-	return true
-end
-
-local function needPost(x, z, lv)
-	if (lv or 0) == 0 and (isSpecialCell(x, z) or isSpecialCell(x + 1, z) or isSpecialCell(x, z + 1) or isSpecialCell(x + 1, z + 1)) then
-		return false
-	end
-	return postNeeded(edge, x, z)
-end
-
--- stairs between PoolRooms floors: anchor cell (even x) .. +1 climb from floor lv to floor lv+1, landing at +2
-local function withLevel(l, fn, ...)
-	local old = LV
-	LV = l
-	local ok, r = pcall(fn, ...)
-	LV = old
-	if ok then return r end
-	return nil
-end
-
-local function stairAt(ax, cz, lv)
-	if ax % 2 ~= 0 then return false end
-	local key = ckey3(ax, cz, lv)
-	local c = stairCache[key]
-	if c ~= nil then return c end
-	local res = false
-	if rnd(ax, cz, 180 + lv * 31) < 0.03 then
-		res = true
-		for dx = 0, 2 do
-			if not isPoolCell(ax + dx, cz) or poolRegion(math.floor((ax + dx) / R), math.floor(cz / R)).kind ~= "maze" then
-				res = false
-			end
-		end
-		if res and withLevel(lv, edge, ax, cz, 1) ~= 1 then res = false end
-		if res and withLevel(lv + 1, edge, ax + 1, cz, 1) ~= 1 then res = false end
-	end
-	stairCache[key] = res
-	return res
-end
-
---// ================= LIGHT HELPERS =================
-local function setLit(e, on)
-	e.panel.Material = on and Enum.Material.Neon or Enum.Material.Plastic
-	e.panel.Color = on and e.onColor or e.offColor
-	if e.light then e.light.Enabled = on end
-end
-
--- ceiling light. backrooms = white square panel, "pool" = soft round disc
-local function makeLight(parent, px, ceilWorldY, pz, lit, withPL, kind)
-	local pool = (kind == "pool")
-	local on = pool and P_GLOW or Color3.fromRGB(250, 248, 232)
-	local panel
-	if pool then
-		panel = mk(parent, "Light", Vector3.new(0.25, 5, 5), CFrame.new(px, ceilWorldY - 0.15, pz) * CFrame.Angles(0, 0, math.pi / 2), on, Enum.Material.Neon)
-		panel.Shape = Enum.PartType.Cylinder
-	else
-		mk(parent, "LightFrame", Vector3.new(5.2, 0.35, 5.2), CFrame.new(px, ceilWorldY - 0.175, pz), Color3.fromRGB(190, 188, 176), Enum.Material.Plastic)
-		panel = mk(parent, "Light", Vector3.new(4.5, 0.22, 4.5), CFrame.new(px, ceilWorldY - 0.29, pz), on, Enum.Material.Neon)
-	end
-	local pl
-	if lit and withPL then
-		pl = Instance.new("PointLight")
-		pl.Range = pool and 28 or 24
-		pl.Brightness = pool and 0.45 or LIGHT_BRIGHTNESS
-		pl.Shadows = false
-		pl.Color = pool and Color3.fromRGB(200, 232, 222) or Color3.fromRGB(255, 244, 214)
-		pl.Parent = panel
-	end
-	local e = {panel = panel, light = pl, base = lit, onColor = on, offColor = Color3.fromRGB(170, 166, 150)}
-	setLit(e, lit)
-	return e
-end
-
---// ================= BACKROOMS WALLS (no fabric, only the carpet is textured) =================
-local buildEdgeWall
-do
-	local function wallSeg(parent, center, len, alongZ, y0, h, color, board)
-		local size = alongZ and Vector3.new(WALL_T, h, len) or Vector3.new(len, h, WALL_T)
-		mk(parent, "Wall", size, CFrame.new(center.X, y0 + h / 2, center.Z), color, MAT_WALL)
-		if board then
-			local bs = alongZ and Vector3.new(WALL_T + 0.3, 0.7, len) or Vector3.new(len, 0.7, WALL_T + 0.3)
-			mk(parent, "Baseboard", bs, CFrame.new(center.X, y0 + 0.35, center.Z), C_BOARD, Enum.Material.Plastic)
-			-- the odd wall outlet
-			if len > CELL - 0.2 then
-				local fx, fz = math.floor(center.X), math.floor(center.Z)
-				if rnd(fx, fz, 90) < 0.06 then
-					local sgn = (rnd(fx, fz, 91) < 0.5) and 1 or -1
-					local off = (rnd(fx, fz, 92) - 0.5) * (len - 3)
-					local d = WALL_T / 2 + 0.06
-					local oc = Color3.fromRGB(205, 195, 170)
-					if alongZ then
-						mk(parent, "Outlet", Vector3.new(0.12, 0.9, 0.55), CFrame.new(center.X + sgn * d, y0 + 1.5, center.Z + off), oc, Enum.Material.Plastic)
-					else
-						mk(parent, "Outlet", Vector3.new(0.55, 0.9, 0.12), CFrame.new(center.X + off, y0 + 1.5, center.Z + sgn * d), oc, Enum.Material.Plastic)
-					end
-				end
-			end
-		end
-	end
-
-	-- dark arrows painted on a wall, pointing toward the PoolRooms
-	local function arrowSign(parent, mid, alongZ, y0, dirVec)
-		local fx, fz = math.floor(mid.X), math.floor(mid.Z)
-		local sgn = (rnd(fx, fz, 210) < 0.5) and 1 or -1
-		local n = alongZ and Vector3.new(sgn, 0, 0) or Vector3.new(0, 0, sgn)
-		local t = alongZ and Vector3.new(0, 0, 1) or Vector3.new(1, 0, 0)
-		local s = (dirVec:Dot(t) >= 0) and 1 or -1
-		local base = Vector3.new(mid.X, y0 + 5 + (rnd(fx, fz, 211) - 0.5) * 2, mid.Z) + n * (WALL_T / 2 + 0.03) + t * ((rnd(fx, fz, 212) - 0.5) * 4)
-		local col = Color3.fromRGB(40, 34, 20)
-		local function stroke(center, dir, len)
-			local p = mk(parent, "Arrow", Vector3.new(0.06, 0.3, len), CFrame.lookAt(center, center + dir), col, Enum.Material.Plastic)
-			p.CastShadow = false
-		end
-		local count = 1 + math.floor(rnd(fx, fz, 213) * 3)
-		for i = 0, count - 1 do
-			local c = base + Vector3.new(0, (i - (count - 1) / 2) * 1.6, 0)
-			local L = 3.2
-			local tip = c + t * (s * L / 2)
-			stroke(c, t * s, L)
-			for _, sy in ipairs({-1, 1}) do
-				local a = math.rad(35)
-				local d = (-s * t) * math.cos(a) + Vector3.new(0, sy * math.sin(a), 0)
-				stroke(tip + d * 0.6, d, 1.2)
-			end
-		end
-	end
-
-	-- door swing (hinge on one side) with an "Open Door" prompt + door sound
-	local function attachDoor(m, hingeFrame, openAngle)
-		local parts = {}
-		local biggest, bv = nil, 0
-		for _, p in ipairs(m:GetDescendants()) do
-			if p:IsA("BasePart") then
-				parts[#parts + 1] = {p = p, rel = hingeFrame:ToObjectSpace(p.CFrame)}
-				p.CanCollide = true
-				local v = p.Size.X * p.Size.Y * p.Size.Z
-				if v > bv then biggest, bv = p, v end
-			end
-		end
-		if not biggest then return end
-
-		local angle = Instance.new("NumberValue")
-		local function apply(a)
-			local rot = CFrame.Angles(0, a, 0)
-			for _, d in ipairs(parts) do d.p.CFrame = hingeFrame * rot * d.rel end
-		end
-
-		local prompt = Instance.new("ProximityPrompt")
-		prompt.ActionText = "Open Door"
-		prompt.ObjectText = "Door"
-		prompt.HoldDuration = 0
-		prompt.MaxActivationDistance = 9
-		prompt.RequiresLineOfSight = false
-		prompt.Parent = biggest
-
-		local isOpen, moving = false, false
-		prompt.Triggered:Connect(function()
-			if moving then return end
-			moving = true
-			isOpen = not isOpen
-			if isOpen then playSfx(ID.door) end
-			local target = isOpen and openAngle or 0
-			for _, d in ipairs(parts) do d.p.CanCollide = false end
-			local c = angle.Changed:Connect(apply)
-			local tw = TweenService:Create(angle, TweenInfo.new(1.0, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Value = target})
-			tw.Completed:Connect(function()
-				c:Disconnect()
-				apply(target)
-				if not isOpen then
-					for _, d in ipairs(parts) do d.p.CanCollide = true end
-				end
-				prompt.ActionText = isOpen and "Close Door" or "Open Door"
-				moving = false
-			end)
-			tw:Play()
-		end)
-	end
-
-	-- the portal door: "Open Door" -> black screen "Habitable Zone" -> Level 1
-	local function attachPortal(m)
-		local biggest, bv = nil, 0
-		for _, p in ipairs(m:GetDescendants()) do
-			if p:IsA("BasePart") then
-				p.CanCollide = true
-				local v = p.Size.X * p.Size.Y * p.Size.Z
-				if v > bv then biggest, bv = p, v end
-			end
-		end
-		if not biggest then return end
-		local prompt = Instance.new("ProximityPrompt")
-		prompt.ActionText = "Open Door"
-		prompt.ObjectText = "Door"
-		prompt.HoldDuration = 0
-		prompt.MaxActivationDistance = 9
-		prompt.RequiresLineOfSight = false
-		prompt.Parent = biggest
-		prompt.Triggered:Connect(function()
-			prompt.Enabled = false
-			playSfx(ID.door)
-			if goHabitable then goHabitable() end
-			task.delay(8, function() pcall(function() prompt.Enabled = true end) end)
-		end)
-	end
-
-	-- the portal door fixed to a wall face, with a dark frame
-	local function placePortalDoor(parent, mid, alongZ, y0)
-		local fx, fz = math.floor(mid.X), math.floor(mid.Z)
-		local sgn = (rnd(fx, fz, 240) < 0.5) and 1 or -1
-		local n = alongZ and Vector3.new(sgn, 0, 0) or Vector3.new(0, 0, sgn)
-		local t = alongZ and Vector3.new(0, 0, 1) or Vector3.new(1, 0, 0)
-		local off = (rnd(fx, fz, 241) - 0.5) * 3
-		local pos = Vector3.new(mid.X, y0 + 0.05 + portalH / 2, mid.Z) + n * (WALL_T / 2 + 0.3) + t * off
-		local cf = CFrame.new(pos)
-		if alongZ then cf = cf * CFrame.Angles(0, math.pi / 2, 0) end
-		local dm = portalTpl:Clone()
-		if not dm then return end
-		applyCF(dm, cf)
-		dm.Parent = parent
-		-- frame
-		local function trim(size, p)
-			mk(parent, "PortalTrim", size, CFrame.new(p), DOOR_TRIM, Enum.Material.Wood)
-		end
-		local th = portalH + 0.3
-		local sideSize = alongZ and Vector3.new(0.7, th, 0.3) or Vector3.new(0.3, th, 0.7)
-		trim(sideSize, pos + t * (portalW / 2 + 0.15) + Vector3.new(0, 0.15, 0))
-		trim(sideSize, pos - t * (portalW / 2 + 0.15) + Vector3.new(0, 0.15, 0))
-		local topSize = alongZ and Vector3.new(0.7, 0.3, portalW + 0.6) or Vector3.new(portalW + 0.6, 0.3, 0.7)
-		trim(topSize, pos + Vector3.new(0, portalH / 2 + 0.15, 0))
-		attachPortal(dm)
-	end
-
-	local function windowWall(parent, mid, alongZ, y0, color)
-		local WW, SILL, TOP = 6, 3.2, 8.4
-		local side = (CELL - WW) / 2
-		local off = WW / 2 + side / 2
-		local axis = alongZ and Vector3.new(0, 0, 1) or Vector3.new(1, 0, 0)
-		wallSeg(parent, mid + axis * off, side, alongZ, y0, WALL_H, color, true)
-		wallSeg(parent, mid - axis * off, side, alongZ, y0, WALL_H, color, true)
-		wallSeg(parent, mid, WW, alongZ, y0, SILL, color, true)
-		wallSeg(parent, mid, WW, alongZ, y0 + TOP, WALL_H - TOP, color, false)
-
-		local gh = TOP - SILL
-		local gsize = alongZ and Vector3.new(0.12, gh, WW) or Vector3.new(WW, gh, 0.12)
-		local g = mk(parent, "Glass", gsize, CFrame.new(mid.X, y0 + SILL + gh / 2, mid.Z), Color3.fromRGB(170, 190, 175), Enum.Material.Glass)
-		g.Transparency = 0.82
-		g.CastShadow = false
-
-		local t2 = WALL_T + 0.3
-		local function trim(along, h, yc, aoff, thick)
-			local size = alongZ and Vector3.new(thick or t2, h, along) or Vector3.new(along, h, thick or t2)
-			local c = mid + axis * aoff
-			mk(parent, "Trim", size, CFrame.new(c.X, yc, c.Z), C_BOARD, Enum.Material.Plastic)
-		end
-		trim(WW + 0.6, 0.3, y0 + SILL + 0.15, 0, WALL_T + 0.6)                      -- sill
-		trim(0.3, gh, y0 + SILL + 0.3 + (gh - 0.3) / 2 - 0.15, WW / 2 - 0.15)       -- left
-		trim(0.3, gh, y0 + SILL + 0.3 + (gh - 0.3) / 2 - 0.15, -(WW / 2 - 0.15))    -- right
-		trim(WW, 0.3, y0 + TOP - 0.15, 0)                                           -- header
-	end
-
-	local function doorway(parent, mid, alongZ, y0, color, withDoor)
-		local side = (CELL - DOOR_W) / 2
-		local off = DOOR_W / 2 + side / 2
-		local axis = alongZ and Vector3.new(0, 0, 1) or Vector3.new(1, 0, 0)
-		wallSeg(parent, mid + axis * off, side, alongZ, y0, WALL_H, color, true)
-		wallSeg(parent, mid - axis * off, side, alongZ, y0, WALL_H, color, true)
-		wallSeg(parent, mid, DOOR_W, alongZ, y0 + DOOR_H, WALL_H - DOOR_H, color, false)
-		if not withDoor then return end
-
-		local t2 = WALL_T + 0.3
-		local function trim(along, h, yc, aoff)
-			local size = alongZ and Vector3.new(t2, h, along) or Vector3.new(along, h, t2)
-			local c = mid + axis * aoff
-			mk(parent, "Trim", size, CFrame.new(c.X, yc, c.Z), DOOR_TRIM, Enum.Material.Wood)
-		end
-		trim(0.3, DOOR_H - 0.3, y0 + (DOOR_H - 0.3) / 2, DOOR_W / 2 - 0.15)
-		trim(0.3, DOOR_H - 0.3, y0 + (DOOR_H - 0.3) / 2, -(DOOR_W / 2 - 0.15))
-		trim(DOOR_W, 0.3, y0 + DOOR_H - 0.15, 0)
-
-		local dm = doorTpl:Clone()
-		if not dm then return end
-		local doorCF = CFrame.new(mid.X, y0 + 0.05 + doorH / 2, mid.Z)
-		if alongZ then doorCF = doorCF * CFrame.Angles(0, math.pi / 2, 0) end
-		applyCF(dm, doorCF)
-		dm.Parent = parent
-		local hinge = doorCF * CFrame.new(-doorW / 2, 0, 0)
-		local sgn = (rnd(math.floor(mid.X), math.floor(mid.Z), 95) < 0.5) and 1 or -1
-		attachDoor(dm, hinge, sgn * math.rad(100))
-	end
-
-	buildEdgeWall = function(parent, cx, cz, dir, state, color)
-		if state == 1 then return end
-		local base = cellPos(cx, cz)
-		local alongZ = (dir == 1)
-		local mid = alongZ and (base + Vector3.new(CELL / 2, 0, 0)) or (base + Vector3.new(0, 0, CELL / 2))
-		local y0 = BASE.Y
-		if state == 0 then
-			if hasWindow(cx, cz, dir) then
-				windowWall(parent, mid, alongZ, y0, color)
-			else
-				wallSeg(parent, mid, CELL, alongZ, y0, WALL_H, color, true)
-				-- arrow signs pointing the way to the PoolRooms
-				if poolCfg and ((poolCfg.axis == 1 and not alongZ) or (poolCfg.axis == 2 and alongZ))
-					and rnd(cx, cz, 215 + dir) < CH.ARROW then
-					local dv = (poolCfg.axis == 1) and Vector3.new(poolCfg.sign, 0, 0) or Vector3.new(0, 0, poolCfg.sign)
-					arrowSign(parent, mid, alongZ, y0, dv)
-				end
-				-- the portal door to Level 1
-				if portalTpl and (math.abs(cx) > 2 or math.abs(cz) > 2) and rnd(cx, cz, 245 + dir) < CH.PORTAL then
-					placePortalDoor(parent, mid, alongZ, y0)
-				end
-			end
-		else
-			doorway(parent, mid, alongZ, y0, color, state == 3 and doorTpl ~= nil)
-		end
-	end
-end
-
---// ================= WATER (terrain, swimmable + realistic) =================
-local getTerrain, addWater, clearWaterList, fakeWater, testWater, applyWaterLook
-do
-	local WATER_PROPS = {"WaterColor", "WaterTransparency", "WaterReflectance", "WaterWaveSize", "WaterWaveSpeed"}
-
-	getTerrain = function() return Workspace:FindFirstChildOfClass("Terrain") end
-
-	addWater = function(owner, x, y, z, sx, sy, sz)
-		local cf, size = CFrame.new(x, y, z), Vector3.new(sx, sy, sz)
-		local t = getTerrain()
-		if t then pcall(function() t:FillBlock(cf, size, Enum.Material.Water) end) end
-		owner.water[#owner.water + 1] = {cf = cf, size = size}
-	end
-
-	clearWaterList = function(list)
-		local t = getTerrain()
-		if not t or not list then return end
-		for _, w in ipairs(list) do
-			pcall(function() t:FillBlock(w.cf, w.size, Enum.Material.Air) end)
-		end
-	end
-
-	-- only used if terrain water really does not work: a glassy reflective slab
-	fakeWater = function(parent, x, y, z, sx, sy, sz)
-		local w = mk(parent, "Water", Vector3.new(sx, sy, sz), CFrame.new(x, y, z), Color3.fromRGB(70, 160, 160), Enum.Material.Glass)
-		w.Transparency = 0.4
-		w.Reflectance = 0.25
-		w.CanCollide = false
-		w.CastShadow = false
-	end
-
-	testWater = function()
-		local t = getTerrain()
-		if not t then return false end
-		local isWater = false
-		local c = BASE + Vector3.new(0, -300, 0)
-		local filled = pcall(function() t:FillBlock(CFrame.new(c), Vector3.new(4, 4, 4), Enum.Material.Water) end)
-		if not filled then return false end
-		local readOk = pcall(function()
-			local region = Region3.new(c - Vector3.new(2, 2, 2), c + Vector3.new(2, 2, 2)):ExpandToGrid(4)
-			local mats = t:ReadVoxels(region, 4)
-			isWater = (mats[1][1][1] == Enum.Material.Water)
-		end)
-		pcall(function() t:FillBlock(CFrame.new(c), Vector3.new(4, 4, 4), Enum.Material.Air) end)
-		if not readOk then return true end -- cannot read it back, but the fill itself worked
-		return isWater
-	end
-
-	applyWaterLook = function()
-		local t = getTerrain()
-		if not t then return end
-		savedWater = {}
-		-- clear, calm, reflective pool water
-		local new = {WaterColor = Color3.fromRGB(46, 156, 164), WaterTransparency = 0.78, WaterReflectance = 0.5, WaterWaveSize = 0.04, WaterWaveSpeed = 5}
-		for _, k in ipairs(WATER_PROPS) do
-			pcall(function()
-				savedWater[k] = t[k]
-				t[k] = new[k]
-			end)
-		end
-	end
-end
-
---// ================= POOLROOMS =================
-local buildPoolCell, releaseSite
-do
-	local function poolWallSeg(parent, center, len, alongZ, y0, h, pp)
-		if h < 0.05 or len < 0.05 then return end
-		local size = alongZ and Vector3.new(WALL_T, h, len) or Vector3.new(len, h, WALL_T)
-		return mk(parent, "PWall", size, CFrame.new(center.X, y0 + h / 2, center.Z), pp.wall, MAT_POOL)
-	end
-
-	-- rounded (stepped) arch doorway
-	local function poolArch(parent, mid, alongZ, y0, pp)
-		local axis = alongZ and Vector3.new(0, 0, 1) or Vector3.new(1, 0, 0)
-		local gw = DOOR_W
-		local side = (CELL - gw) / 2
-		local off = gw / 2 + side / 2
-		poolWallSeg(parent, mid + axis * off, side, alongZ, y0, 7.5, pp)
-		poolWallSeg(parent, mid - axis * off, side, alongZ, y0, 7.5, pp)
-		local r = gw / 2
-		for i = 0, 2 do
-			local ym = 0.6 + i * 1.2
-			local gap = math.sqrt(math.max(r * r - ym * ym, 0.01))
-			local len = CELL / 2 - gap
-			local c = (CELL / 2 + gap) / 2
-			poolWallSeg(parent, mid + axis * c, len, alongZ, y0 + 7.5 + i * 1.2, 1.2, pp)
-			poolWallSeg(parent, mid - axis * c, len, alongZ, y0 + 7.5 + i * 1.2, 1.2, pp)
-		end
-		poolWallSeg(parent, mid, CELL, alongZ, y0 + 11.1, PH - 11.1, pp)
-	end
-
-	local function poolWindow(parent, mid, alongZ, y0, pp)
-		local WW, SILL, TOP = 6, 3, 9
-		local side = (CELL - WW) / 2
-		local off = WW / 2 + side / 2
-		local axis = alongZ and Vector3.new(0, 0, 1) or Vector3.new(1, 0, 0)
-		poolWallSeg(parent, mid + axis * off, side, alongZ, y0, PH, pp)
-		poolWallSeg(parent, mid - axis * off, side, alongZ, y0, PH, pp)
-		poolWallSeg(parent, mid, WW, alongZ, y0, SILL, pp)
-		poolWallSeg(parent, mid, WW, alongZ, y0 + TOP, PH - TOP, pp)
-		local gh = TOP - SILL
-		local gsize = alongZ and Vector3.new(0.12, gh, WW) or Vector3.new(WW, gh, 0.12)
-		local g = mk(parent, "Glass", gsize, CFrame.new(mid.X, y0 + SILL + gh / 2, mid.Z), Color3.fromRGB(190, 215, 210), Enum.Material.Glass)
-		g.Transparency = 0.8
-		g.CastShadow = false
-	end
-
-	-- three dark round portholes low on a wall
-	local function poolPortholes(parent, mid, alongZ, y0)
-		local fx, fz = math.floor(mid.X), math.floor(mid.Z)
-		local sgn = (rnd(fx, fz, 175) < 0.5) and 1 or -1
-		local normal = alongZ and Vector3.new(sgn, 0, 0) or Vector3.new(0, 0, sgn)
-		local along = alongZ and Vector3.new(0, 0, 1) or Vector3.new(1, 0, 0)
-		for i = -1, 1 do
-			local pos = Vector3.new(mid.X, y0 + 2.6, mid.Z) + normal * (WALL_T / 2 + 0.06) + along * (i * 3.6)
-			local cf = CFrame.lookAt(pos, pos + normal)
-			local p = mk(parent, "Porthole", Vector3.new(0.1, 3, 3), cf * CFrame.Angles(0, math.pi / 2, 0), Color3.fromRGB(28, 50, 46), Enum.Material.SmoothPlastic)
-			p.Shape = Enum.PartType.Cylinder
-		end
-	end
-
-	local function poolShower(parent, mid, alongZ, y0)
-		local fx, fz = math.floor(mid.X), math.floor(mid.Z)
-		local sgn = (rnd(fx, fz, 170) < 0.5) and 1 or -1
-		local off = (rnd(fx, fz, 171) - 0.5) * 6
-		local normal = alongZ and Vector3.new(sgn, 0, 0) or Vector3.new(0, 0, sgn)
-		local along = alongZ and Vector3.new(0, 0, 1) or Vector3.new(1, 0, 0)
-		local pos = Vector3.new(mid.X, y0, mid.Z) + normal * (WALL_T / 2) + along * off
-		local cf = CFrame.lookAt(pos, pos + normal) -- local -Z points into the room
-		local METAL = Color3.fromRGB(190, 195, 200)
-		local function cyl(size, offset, rot)
-			local p = mk(parent, "Shower", size, cf * CFrame.new(offset) * rot, METAL, Enum.Material.Metal)
-			p.Shape = Enum.PartType.Cylinder
-		end
-		cyl(Vector3.new(7, 0.25, 0.25), Vector3.new(0, 4.5, -0.25), CFrame.Angles(0, 0, math.pi / 2))
-		cyl(Vector3.new(1.2, 0.25, 0.25), Vector3.new(0, 8, -0.85), CFrame.Angles(0, math.pi / 2, 0))
-		cyl(Vector3.new(0.25, 1.4, 1.4), Vector3.new(0, 7.8, -1.5), CFrame.Angles(0, 0, math.pi / 2))
-		mk(parent, "Towel", Vector3.new(1.2, 2.6, 0.12), cf * CFrame.new(-3, 4.5, -0.1), Color3.fromRGB(35, 40, 48), Enum.Material.SmoothPlastic)
-	end
-
-	local function buildPoolEdge(parent, cx, cz, dir, state, y0, pp)
-		if state == 1 then return end
-		local base = cellPos(cx, cz)
-		local alongZ = (dir == 1)
-		local mid = alongZ and (base + Vector3.new(CELL / 2, 0, 0)) or (base + Vector3.new(0, 0, CELL / 2))
-		if state == 0 then
-			local w = rnd(cx, cz, 81 + dir + LV * 977)
-			if w < 0.03 then
-				poolWindow(parent, mid, alongZ, y0, pp)
-			else
-				poolWallSeg(parent, mid, CELL, alongZ, y0, PH, pp)
-				if w > 0.95 then
-					poolShower(parent, mid, alongZ, y0)
-				elseif w > 0.86 then
-					poolPortholes(parent, mid, alongZ, y0)
-				end
-			end
-		else
-			poolArch(parent, mid, alongZ, y0, pp)
-		end
-	end
-
-	-- big pool hall / tiered atrium (a whole zone built in one go, floor 0 only)
-	local function buildPoolSite(site, rx, rz, info)
-		local f = Instance.new("Folder")
-		f.Name = "PoolSite"
-		site.folder = f
-		local atrium = (info.kind == "atrium")
-		local ox = BASE.X + (rx * R + (R - 1) / 2) * CELL
-		local oz = BASE.Z + (rz * R + (R - 1) / 2) * CELL
-		local oy = BASE.Y
-		local top = atrium and 45 or (PH + 2)   -- top of the ceiling slab
-		local cb = top - 2                      -- underside of the ceiling
-		local ph = atrium and 18 or 22          -- half size of the pool
-		local sh = atrium and 12 or 10          -- half size of the skylight
-		local SPM = MAT_POOL
-
-		local function B(name, x0, x1, y0, y1, z0, z1, color, mat)
-			return mk(f, name, Vector3.new(x1 - x0, y1 - y0, z1 - z0),
-				CFrame.new(ox + (x0 + x1) / 2, oy + (y0 + y1) / 2, oz + (z0 + z1) / 2), color, mat or SPM)
-		end
-		local function glow(x, y, z, range, bright)
-			local a = B("Glow", x - 0.2, x + 0.2, y - 0.2, y + 0.2, z - 0.2, z + 0.2, P_GLOW, Enum.Material.SmoothPlastic)
-			a.Transparency = 1
-			a.CanCollide = false
-			a.CastShadow = false
-			local pl = Instance.new("PointLight")
-			pl.Range, pl.Brightness, pl.Shadows = range, bright, false
-			pl.Color = Color3.fromRGB(200, 232, 222)
-			pl.Parent = a
-		end
-
-		-- deck around the pool
-		B("Deck", -36, 36, -2, 0, ph, 36, P_FLOOR).Reflectance = 0.08
-		B("Deck", -36, 36, -2, 0, -36, -ph, P_FLOOR).Reflectance = 0.08
-		B("Deck", -36, -ph, -2, 0, -ph, ph, P_FLOOR).Reflectance = 0.08
-		B("Deck", ph, 36, -2, 0, -ph, ph, P_FLOOR).Reflectance = 0.08
-
-		-- basin, ramp out, water
-		B("BasinFloor", -ph - 2, ph + 2, -14, -12, -ph - 2, ph + 2, P_BASIN)
-		B("BasinW", -ph - 2, -ph, -14, -2, -ph - 2, ph + 2, P_BASIN)
-		B("BasinE", ph, ph + 2, -14, -2, -ph - 2, ph + 2, P_BASIN)
-		B("BasinS", -ph - 2, ph + 2, -14, -2, -ph - 2, -ph, P_BASIN)
-		B("BasinN", -ph - 2, ph + 2, -14, -2, ph, ph + 2, P_BASIN)
-		rampPart(f, Vector3.new(ox, oy - 12, oz - (ph - 16)), Vector3.new(ox, oy, oz - ph), 8, P_BASIN, SPM)
-		addWater(site, ox, oy - 8, oz, 2 * ph, 8, 2 * ph)
-		if not waterOK then fakeWater(f, ox, oy - 8, oz, 2 * ph, 8, 2 * ph) end
-
-		-- ceiling with a skylight + soft light shaft
-		B("Ceil", -36, 36, cb, top, sh, 36, P_CEIL)
-		B("Ceil", -36, 36, cb, top, -36, -sh, P_CEIL)
-		B("Ceil", -36, -sh, cb, top, -sh, sh, P_CEIL)
-		B("Ceil", sh, 36, cb, top, -sh, sh, P_CEIL)
-		B("ShaftWall", -sh - 0.5, sh + 0.5, top, top + 12, sh, sh + 0.5, P_CEIL)
-		B("ShaftWall", -sh - 0.5, sh + 0.5, top, top + 12, -sh - 0.5, -sh, P_CEIL)
-		B("ShaftWall", -sh - 0.5, -sh, top, top + 12, -sh, sh, P_CEIL)
-		B("ShaftWall", sh, sh + 0.5, top, top + 12, -sh, sh, P_CEIL)
-		B("ShaftCap", -sh - 0.5, sh + 0.5, top + 12, top + 12.4, -sh - 0.5, sh + 0.5, P_GLOW, Enum.Material.Neon)
-		glow(0, top + 8, 0, 90, 0.8)
-		glow(0, cb - 4, 0, 70, 0.5)
-
-		if atrium then
-			-- tiered balconies + two long ramps up (no railings)
-			for _, t in ipairs({{y = 15, inner = 26}, {y = 29, inner = 20}}) do
-				local yt, ib = t.y, t.inner
-				B("Balcony", -36, 36, yt - 2, yt, ib, 36, P_FLOOR)
-				B("Balcony", -36, 36, yt - 2, yt, -36, -ib, P_FLOOR)
-				B("Balcony", -36, -ib, yt - 2, yt, -ib, ib, P_FLOOR)
-				B("Balcony", ib, 36, yt - 2, yt, -ib, ib, P_FLOOR)
-				glow(0, yt - 3, 0, 50, 0.3)
-			end
-			rampPart(f, Vector3.new(ox - 22, oy, oz - 30), Vector3.new(ox - 22, oy + 15, oz + 30), 8, P_FLOOR, SPM)
-			rampPart(f, Vector3.new(ox + 14, oy + 15, oz - 30), Vector3.new(ox + 14, oy + 29, oz + 30), 8, P_FLOOR, SPM)
-		else
-			-- round columns around the hall pool
-			local cpos = (ph + 36) / 2
-			for _, c in ipairs({{-cpos, -cpos}, {cpos, -cpos}, {-cpos, cpos}, {cpos, cpos}, {0, cpos}, {0, -cpos}, {cpos, 0}, {-cpos, 0}}) do
-				local col = mk(f, "Column", Vector3.new(cb + 2, 2.8, 2.8), CFrame.new(ox + c[1], oy + (cb - 2) / 2, oz + c[2]) * CFrame.Angles(0, 0, math.pi / 2), P_WALL, SPM)
-				col.Shape = Enum.PartType.Cylinder
-			end
-			for _, c in ipairs({{-24, -24}, {24, -24}, {-24, 24}, {24, 24}}) do glow(c[1], cb - 2, c[2], 36, 0.35) end
-		end
-
-		-- boundary walls (the zone owns them, so they are as tall as the room)
-		local function wallPiece(alongX, fixed, a, b, y0, y1)
-			if b - a < 0.05 or y1 - y0 < 0.05 then return end
-			if alongX then
-				B("BWall", a, b, y0, y1, fixed - WALL_T / 2, fixed + WALL_T / 2, P_WALL)
-			else
-				B("BWall", fixed - WALL_T / 2, fixed + WALL_T / 2, y0, y1, a, b, P_WALL)
-			end
-		end
-		local function boundarySeg(alongX, fixed, c, state)
-			local a, b = c - CELL / 2, c + CELL / 2
-			if state == 0 then
-				wallPiece(alongX, fixed, a, b, -2, top)
-			elseif state == 2 then
-				wallPiece(alongX, fixed, a, c - DOOR_W / 2, -2, top)
-				wallPiece(alongX, fixed, c + DOOR_W / 2, b, -2, top)
-				wallPiece(alongX, fixed, c - DOOR_W / 2, c + DOOR_W / 2, 10, top)
-			end
-		end
-		for j = 0, R - 1 do
-			local c = (j - (R - 1) / 2) * CELL
-			boundarySeg(false, -36, c, edge(rx * R - 1, rz * R + j, 1))
-			boundarySeg(false, 36, c, edge(rx * R + R - 1, rz * R + j, 1))
-			boundarySeg(true, -36, c, edge(rx * R + j, rz * R - 1, 2))
-			boundarySeg(true, 36, c, edge(rx * R + j, rz * R + R - 1, 2))
-		end
-		for _, c in ipairs({{-36, -36}, {36, -36}, {-36, 36}, {36, 36}}) do
-			B("Post", c[1] - 0.5, c[1] + 0.5, -2, top, c[2] - 0.5, c[2] + 0.5, P_WALL)
-		end
-
-		f.Parent = rootFolder
-	end
-
-	local function ensurePoolSite(rx, rz, info)
-		local key = ckey(rx, rz)
-		local site = poolSites[key]
-		if not site then
-			site = {count = 0, water = {}, key = key}
-			poolSites[key] = site
-			buildPoolSite(site, rx, rz, info)
-		end
-		return site
-	end
-
-	releaseSite = function(site)
-		site.count -= 1
-		if site.count <= 0 then
-			if site.folder then site.folder:Destroy() end
-			clearWaterList(site.water)
-			poolSites[site.key] = nil
-		end
-	end
-
-	buildPoolCell = function(cx, cz, lv)
-		local rx, rz = math.floor(cx / R), math.floor(cz / R)
-		local info = poolRegion(rx, rz)
-		local special = info.kind ~= "maze"
-		if special and (lv == 0 or blockedLv(lv)) then
-			local ef = Instance.new("Folder")
-			ef.Name = "Empty"
-			ef.Parent = rootFolder
-			local rec = {folder = ef, x = cx, z = cz, lv = lv}
-			if lv == 0 then
-				local site = ensurePoolSite(rx, rz, info)
-				site.count += 1
-				rec.site = site
-			end
-			cells[ckey3(cx, cz, lv)] = rec
-			return
-		end
-
-		local oy = BASE.Y + lv * PLH
-		local pp = POOLPAL[lv % 3 + 1]
-		local L = lv * 977
-		local s = special and 6 or info.s
-		local f = Instance.new("Folder")
-		f.Name = "PoolCell"
-		local pos = cellPos(cx, cz)
-		local data = {folder = f, x = cx, z = cz, lv = lv, water = {}}
-		local SPM = MAT_POOL
-
-		local ax = cx - (cx % 2)
-		local up = stairAt(ax, cz, lv)         -- a staircase leaves this floor here
-		local down = stairAt(ax, cz, lv - 1)   -- a staircase from the floor below arrives here
-
-		-- floor, sometimes with a small swimming pool
-		if down then
-			-- open stairwell, no floor
-		elseif (not up) and rnd(cx, cz, 150 + L) < 0.08 then
-			for _, p in ipairs(holeBoxes(f, pos.X, pos.Z, 8, oy - 1, 2, pp.floor, SPM)) do p.Reflectance = 0.08 end
-			mk(f, "BasinFloor", Vector3.new(8, 1, 8), CFrame.new(pos.X, oy - 8.5, pos.Z), pp.basin, SPM)
-			mk(f, "BasinWall", Vector3.new(8, 6, 0.4), CFrame.new(pos.X, oy - 5, pos.Z + 3.8), pp.basin, SPM)
-			mk(f, "BasinWall", Vector3.new(8, 6, 0.4), CFrame.new(pos.X, oy - 5, pos.Z - 3.8), pp.basin, SPM)
-			mk(f, "BasinWall", Vector3.new(0.4, 6, 8), CFrame.new(pos.X + 3.8, oy - 5, pos.Z), pp.basin, SPM)
-			mk(f, "BasinWall", Vector3.new(0.4, 6, 8), CFrame.new(pos.X - 3.8, oy - 5, pos.Z), pp.basin, SPM)
-			mk(f, "Step", Vector3.new(2, 4, 8), CFrame.new(pos.X + 3, oy - 6, pos.Z), pp.basin, SPM)
-			addWater(data, pos.X, oy - 6, pos.Z, 8, 4, 8)
-			if not waterOK then fakeWater(f, pos.X, oy - 6, pos.Z, 8, 4, 8) end
-		else
-			local fl = mk(f, "Floor", Vector3.new(CELL, 2, CELL), CFrame.new(pos.X, oy - 1, pos.Z), pp.floor, SPM)
-			fl.Reflectance = 0.08 -- wet tile shine
-		end
-
-		-- stairs up to the next PoolRooms floor
-		if up and cx == ax then
-			buildStairs(f, pos.X - CELL / 2, oy, pos.Z, PLH, 20, CELL, pp.floor, SPM)
-		end
-
-		-- ceiling, round soft lights, skylight shafts
-		local hasLight = (not up) and ((cx + 2 * cz + lv) % 3 == 0)
-		local shaft = (not up) and (not hasLight) and rnd(cx, cz, 152 + L) < 0.04
-		if up then
-			-- open stairwell, no ceiling
-		elseif shaft then
-			holeBoxes(f, pos.X, pos.Z, 6, oy + PH + 0.5, 1, pp.ceil, SPM)
-			local sy = oy + PH + 6
-			mk(f, "ShaftWall", Vector3.new(6, 10, 0.4), CFrame.new(pos.X, sy, pos.Z + 2.8), pp.ceil, SPM)
-			mk(f, "ShaftWall", Vector3.new(6, 10, 0.4), CFrame.new(pos.X, sy, pos.Z - 2.8), pp.ceil, SPM)
-			mk(f, "ShaftWall", Vector3.new(0.4, 10, 6), CFrame.new(pos.X + 2.8, sy, pos.Z), pp.ceil, SPM)
-			mk(f, "ShaftWall", Vector3.new(0.4, 10, 6), CFrame.new(pos.X - 2.8, sy, pos.Z), pp.ceil, SPM)
-			local cap = mk(f, "ShaftCap", Vector3.new(6.4, 0.4, 6.4), CFrame.new(pos.X, oy + PH + 11.2, pos.Z), P_GLOW, Enum.Material.Neon)
-			local pl = Instance.new("PointLight")
-			pl.Range, pl.Brightness, pl.Shadows = 34, 0.6, false
-			pl.Color = Color3.fromRGB(200, 232, 222)
-			pl.Parent = cap
-		else
-			mk(f, "Ceiling", Vector3.new(CELL, 1, CELL), CFrame.new(pos.X, oy + PH + 0.5, pos.Z), pp.ceil, SPM)
-		end
-		if hasLight then
-			data.entry = makeLight(f, pos.X, oy + PH, pos.Z, rnd(cx, cz, 153 + L) > 0.1, true, "pool")
-		end
-
-		-- walls (owned by this cell: east + north edge)
-		local function edgeState(dir)
-			local st = edge(cx, cz, dir)
-			if lv ~= 0 and blockedLv(lv) then
-				local ox, oz = cx, cz
-				if dir == 1 then ox = cx + 1 else oz = cz + 1 end
-				if isSpecialCell(ox, oz) then st = 0 end
-			end
-			return st
-		end
-		if lv ~= 0 or not adjSpecial(cx, cz, 1) then buildPoolEdge(f, cx, cz, 1, edgeState(1), oy, pp) end
-		if lv ~= 0 or not adjSpecial(cx, cz, 2) then buildPoolEdge(f, cx, cz, 2, edgeState(2), oy, pp) end
-		if lv ~= 0 and blockedLv(lv) then
-			-- the empty floors above/below big halls need a wall around them
-			if isSpecialCell(cx - 1, cz) then buildPoolEdge(f, cx - 1, cz, 1, 0, oy, pp) end
-			if isSpecialCell(cx, cz - 1) then buildPoolEdge(f, cx, cz - 1, 2, 0, oy, pp) end
-		end
-		if needPost(cx, cz, lv) then
-			local pp2 = pos + Vector3.new(CELL / 2, 0, CELL / 2)
-			mk(f, "PPost", Vector3.new(WALL_T + 0.2, PH, WALL_T + 0.2), CFrame.new(pp2.X, oy + PH / 2, pp2.Z), pp.wall, SPM)
-		end
-
-		-- round columns in the bigger rooms
-		if s >= 3 and (not up) and (not down) and rnd(cx, cz, 160 + L) < (s == 6 and 0.12 or 0.05) then
-			local dx = (rnd(cx, cz, 161) - 0.5) * 4
-			local dz = (rnd(cx, cz, 162) - 0.5) * 4
-			local col = mk(f, "Column", Vector3.new(PH, 2.6, 2.6), CFrame.new(pos.X + dx, oy + PH / 2, pos.Z + dz) * CFrame.Angles(0, 0, math.pi / 2), pp.wall, SPM)
-			col.Shape = Enum.PartType.Cylinder
-		end
-
-		f.Parent = rootFolder
-		cells[ckey3(cx, cz, lv)] = data
-	end
-end
-
---// ================= LEVEL 1 : HABITABLE ZONE (very detailed abandoned concrete garage) =================
-local buildHabCell
-do
-	local MH = MAT_HAB
-	local HAB_WALL = Color3.fromRGB(176, 178, 174)
-	local HAB_DARK = Color3.fromRGB(122, 124, 120)
-	local HAB_SIGNS = {"EXIT", "P1", "LEVEL 1", "NO PARKING", "DANGER", "STAIRS", "FIRE EXIT", "B2", "KEEP CLEAR", "AUTHORIZED ONLY", "WATCH YOUR STEP", "NO ENTRY"}
-
-	local function habInfo(rx, rz)
-		local k = ckey(rx, rz)
-		local c = habRegionCache[k]
-		if c then return c end
-		local kind = "garage"
-		if not (rx == 0 and rz == 0) and rnd(rx, rz, 220) < 0.30 then kind = "corridor" end
-		c = {kind = kind}
-		habRegionCache[k] = c
-		return c
-	end
-
-	-- garages are wide open, corridor zones are concrete mazes with dead ends
-	local function habEdge(x, z, dir)
-		local ox, oz = x, z
-		if dir == 1 then ox = x + 1 else oz = z + 1 end
-		local rx, rz = math.floor(x / R), math.floor(z / R)
-		local qx, qz = math.floor(ox / R), math.floor(oz / R)
-		if rx ~= qx or rz ~= qz then
-			local r = rnd(x, z, 230 + dir)
-			if r < 0.45 then return 1 end
-			if r < 0.70 then return 2 end
-			return 0
-		end
-		if habInfo(rx, rz).kind == "garage" then return 1 end
-		local lx, lz = x - rx * R, z - rz * R
-		local carve
-		if lx == R - 1 and lz == R - 1 then carve = 0
-		elseif lx == R - 1 then carve = 2
-		elseif lz == R - 1 then carve = 1
-		else carve = (rnd(x, z, 231) < 0.5) and 1 or 2 end
-		local open = (carve == dir) or (rnd(x, z, 232 + dir) < 0.14)
-		if not open then return 0 end
-		return (rnd(x, z, 234 + dir) < 0.5) and 2 or 1
-	end
-
-	-- flat decoration: no collision, no shadow
-	local function decal(parent, name, size, cf, color, mat, refl, trans)
-		local p = mk(parent, name, size, cf, color, mat or Enum.Material.SmoothPlastic)
-		p.CanCollide = false
-		p.CastShadow = false
-		if refl then p.Reflectance = refl end
-		if trans then p.Transparency = trans end
-		return p
-	end
-
-	local function habWall(parent, center, len, alongZ, y0, h)
-		if h < 0.05 or len < 0.05 then return end
-		local size = alongZ and Vector3.new(1, h, len) or Vector3.new(len, h, 1)
-		mk(parent, "HWall", size, CFrame.new(center.X, y0 + h / 2, center.Z), HAB_WALL, MH)
-	end
-
-	-- zig-zag crack in the concrete
-	local function crack(parent, x, y, z, cx, cz)
-		local px, pz = x, z
-		local yaw = rnd(cx, cz, 273) * 6.28
-		for i = 1, 3 do
-			local len = 2.2 + rnd(cx, cz, 274 + i) * 2.5
-			local nx, nz = px + math.cos(yaw) * len, pz + math.sin(yaw) * len
-			local cf = CFrame.lookAt(Vector3.new((px + nx) / 2, y, (pz + nz) / 2), Vector3.new(nx, y, nz))
-			decal(parent, "Crack", Vector3.new(0.1, 0.03, len), cf, Color3.fromRGB(38, 40, 40), MH)
-			px, pz = nx, nz
-			yaw = yaw + (rnd(cx, cz, 278 + i) - 0.5) * 1.6
-		end
-	end
-
-	-- white road arrow painted on the floor
-	local function floorArrow(parent, x, z, yaw)
-		local col = Color3.fromRGB(205, 205, 195)
-		local base = CFrame.new(x, HAB.Y + 0.03, z) * CFrame.Angles(0, yaw, 0)
-		decal(parent, "FloorArrow", Vector3.new(0.5, 0.03, 5), base, col)
-		for _, s in ipairs({-1, 1}) do
-			local d = Vector3.new(s * math.sin(0.7), 0, math.cos(0.7))
-			local center = Vector3.new(0, 0, -2.5) + d * 1.0
-			decal(parent, "FloorArrow", Vector3.new(0.5, 0.03, 2), base * CFrame.lookAt(center, center + d), col)
-		end
-	end
-
-	-- an abandoned car
-	local function car(parent, x, z, yaw, seed)
-		local colors = {Color3.fromRGB(60, 66, 80), Color3.fromRGB(120, 40, 36), Color3.fromRGB(96, 98, 94), Color3.fromRGB(40, 44, 40), Color3.fromRGB(150, 140, 110)}
-		local col = colors[1 + math.floor(rnd(seed, 3, 280) * #colors)]
-		local base = CFrame.new(x, HAB.Y, z) * CFrame.Angles(0, yaw, 0)
-		local function part(name, size, off, color, mat)
-			return mk(parent, name, size, base * CFrame.new(off), color, mat or Enum.Material.Metal)
-		end
-		part("CarBody", Vector3.new(4.4, 1.5, 9.4), Vector3.new(0, 1.7, 0), col)
-		part("CarCabin", Vector3.new(3.8, 1.4, 4.6), Vector3.new(0, 3.1, -0.4), shade(col, 0.9))
-		local g = part("CarGlass", Vector3.new(3.84, 1.0, 4.2), Vector3.new(0, 3.15, -0.4), Color3.fromRGB(50, 60, 66), Enum.Material.Glass)
-		g.Transparency = 0.4
-		for _, sx in ipairs({-2.2, 2.2}) do
-			for _, sz in ipairs({-3, 3}) do
-				local w = part("Wheel", Vector3.new(0.8, 1.8, 1.8), Vector3.new(sx, 0.9, sz), Color3.fromRGB(24, 24, 24), Enum.Material.SmoothPlastic)
-				w.Shape = Enum.PartType.Cylinder
-			end
-		end
-		part("Bumper", Vector3.new(4.5, 0.5, 0.4), Vector3.new(0, 1.0, 4.8), Color3.fromRGB(40, 40, 40))
-		part("Bumper", Vector3.new(4.5, 0.5, 0.4), Vector3.new(0, 1.0, -4.8), Color3.fromRGB(40, 40, 40))
-	end
-
-	local function cone(parent, x, z)
-		mk(parent, "ConeBase", Vector3.new(1.1, 0.15, 1.1), CFrame.new(x, HAB.Y + 0.08, z), Color3.fromRGB(230, 120, 30), Enum.Material.Plastic)
-		local b = mk(parent, "Cone", Vector3.new(1.5, 0.7, 0.7), CFrame.new(x, HAB.Y + 0.9, z) * CFrame.Angles(0, 0, math.pi / 2), Color3.fromRGB(235, 110, 25), Enum.Material.Plastic)
-		b.Shape = Enum.PartType.Cylinder
-		local w = mk(parent, "ConeBand", Vector3.new(0.3, 0.74, 0.74), CFrame.new(x, HAB.Y + 1.0, z) * CFrame.Angles(0, 0, math.pi / 2), Color3.fromRGB(235, 235, 230), Enum.Material.Plastic)
-		w.Shape = Enum.PartType.Cylinder
-	end
-
-	local function barrel(parent, x, z)
-		local b = mk(parent, "Barrel", Vector3.new(2.4, 1.6, 1.6), CFrame.new(x, HAB.Y + 1.2, z) * CFrame.Angles(0, 0, math.pi / 2), Color3.fromRGB(46, 76, 140), Enum.Material.Metal)
-		b.Shape = Enum.PartType.Cylinder
-		local r = mk(parent, "BarrelRing", Vector3.new(0.2, 1.7, 1.7), CFrame.new(x, HAB.Y + 1.2, z) * CFrame.Angles(0, 0, math.pi / 2), Color3.fromRGB(30, 50, 100), Enum.Material.Metal)
-		r.Shape = Enum.PartType.Cylinder
-	end
-
-	local function crates(parent, x, z, yaw)
-		local base = CFrame.new(x, HAB.Y, z) * CFrame.Angles(0, yaw, 0)
-		local wood = Color3.fromRGB(150, 118, 78)
-		mk(parent, "Crate", Vector3.new(2.4, 2.4, 2.4), base * CFrame.new(0, 1.2, 0), wood, Enum.Material.Wood)
-		mk(parent, "Crate", Vector3.new(2.2, 2.2, 2.2), base * CFrame.new(2.6, 1.1, 0.3), shade(wood, 0.9), Enum.Material.Wood)
-		mk(parent, "Crate", Vector3.new(2, 2, 2) , base * CFrame.new(0.4, 3.3, 0) * CFrame.Angles(0, 0.3, 0), shade(wood, 1.05), Enum.Material.Wood)
-	end
-
-	local function rubble(parent, x, z, cx, cz)
-		for i = 1, 4 do
-			local s = 0.5 + rnd(cx, cz, 282 + i) * 1.1
-			mk(parent, "Rubble", Vector3.new(s, s * 0.7, s * 1.2),
-				CFrame.new(x + (rnd(cx, cz, 286 + i) - 0.5) * 3, HAB.Y + s * 0.3, z + (rnd(cx, cz, 290 + i) - 0.5) * 3) * CFrame.Angles(rnd(cx, cz, 294 + i), rnd(cx, cz, 298 + i) * 6, 0),
-				Color3.fromRGB(128, 130, 126), MH)
-		end
-	end
-
-	local function extinguisher(parent, pos)
-		local c = mk(parent, "Extinguisher", Vector3.new(1.4, 0.4, 0.4), CFrame.new(pos) * CFrame.Angles(0, 0, math.pi / 2), Color3.fromRGB(190, 30, 28), Enum.Material.Metal)
-		c.Shape = Enum.PartType.Cylinder
-		c.CanCollide = false
-		local top = mk(parent, "ExtinguisherTop", Vector3.new(0.25, 0.25, 0.25), CFrame.new(pos + Vector3.new(0, 0.8, 0)), Color3.fromRGB(30, 30, 30), Enum.Material.Metal)
-		top.CanCollide = false
-		local plate = mk(parent, "ExtinguisherSign", Vector3.new(0.9, 0.9, 0.06), CFrame.new(pos + Vector3.new(0, 1.9, 0)), Color3.fromRGB(190, 30, 28), Enum.Material.SmoothPlastic)
-		plate.CanCollide = false
-	end
-
-	local function doubleDoor(parent, mid, alongZ, y0, n, t)
-		local dc = Color3.fromRGB(52, 54, 58)
-		local c0 = Vector3.new(mid.X, y0, mid.Z) + n * (0.5 + 0.18)
-		for _, s in ipairs({-1, 1}) do
-			local pos = c0 + t * (s * 1.55) + Vector3.new(0, 3.7, 0)
-			mk(parent, "DoorPanel", alongZ and Vector3.new(0.36, 7.4, 3) or Vector3.new(3, 7.4, 0.36), CFrame.new(pos), dc, Enum.Material.Metal)
-			decal(parent, "PushBar", alongZ and Vector3.new(0.12, 0.15, 2.4) or Vector3.new(2.4, 0.15, 0.12),
-				CFrame.new(c0 + t * (s * 1.55) + Vector3.new(0, 3.6, 0) + n * 0.28), Color3.fromRGB(190, 190, 190), Enum.Material.Metal)
-		end
-		decal(parent, "DoorFrame", alongZ and Vector3.new(0.5, 0.4, 6.4) or Vector3.new(6.4, 0.4, 0.5), CFrame.new(c0 + Vector3.new(0, 7.6, 0)), dc, Enum.Material.Metal)
-	end
-
-	local function signPlate(parent, mid, alongZ, y0, n, t, sgn, cx, cz)
-		local text = HAB_SIGNS[1 + math.floor(rnd(cx, cz, 320) * #HAB_SIGNS)]
-		local yellow = rnd(cx, cz, 321) < 0.4
-		local off = (rnd(cx, cz, 322) - 0.5) * 4
-		local pos = Vector3.new(mid.X, y0 + 5.2, mid.Z) + n * (0.5 + 0.06) + t * off
-		local plate = mk(parent, "Sign", alongZ and Vector3.new(0.12, 1.5, 3.6) or Vector3.new(3.6, 1.5, 0.12), CFrame.new(pos),
-			yellow and Color3.fromRGB(215, 185, 60) or Color3.fromRGB(225, 225, 220), Enum.Material.SmoothPlastic)
-		plate.CanCollide = false
-		local sg = Instance.new("SurfaceGui")
-		if alongZ then
-			sg.Face = (sgn > 0) and Enum.NormalId.Right or Enum.NormalId.Left
-		else
-			sg.Face = (sgn > 0) and Enum.NormalId.Back or Enum.NormalId.Front
-		end
-		sg.Parent = plate
-		local tl = Instance.new("TextLabel")
-		tl.Size = UDim2.fromScale(1, 1)
-		tl.BackgroundTransparency = 1
-		tl.TextScaled = true
-		tl.Font = Enum.Font.GothamBold
-		tl.TextColor3 = Color3.fromRGB(25, 25, 25)
-		tl.Text = text
-		tl.Parent = sg
-	end
-
-	local function conduit(parent, mid, alongZ, y0, n, t, cx, cz)
-		local off = (rnd(cx, cz, 330) - 0.5) * 6
-		local pos = Vector3.new(mid.X, y0 + 4.5, mid.Z) + n * (0.5 + 0.18) + t * off
-		local c = mk(parent, "Conduit", Vector3.new(9, 0.25, 0.25), CFrame.new(pos) * CFrame.Angles(0, 0, math.pi / 2), Color3.fromRGB(150, 154, 158), Enum.Material.Metal)
-		c.Shape = Enum.PartType.Cylinder
-		c.CanCollide = false
-		local jb = mk(parent, "JunctionBox", alongZ and Vector3.new(0.5, 1, 0.8) or Vector3.new(0.8, 1, 0.5),
-			CFrame.new(Vector3.new(pos.X, y0 + 3.0, pos.Z) + n * 0.1), Color3.fromRGB(120, 126, 130), Enum.Material.Metal)
-		jb.CanCollide = false
-	end
-
-	local function buildEdge(parent, cx, cz, dir, state)
-		if state == 1 then return end
-		local base = habPos(cx, cz)
-		local alongZ = (dir == 1)
-		local mid = alongZ and (base + Vector3.new(CELL / 2, 0, 0)) or (base + Vector3.new(0, 0, CELL / 2))
-		local y0 = HAB.Y
-		local t = alongZ and Vector3.new(0, 0, 1) or Vector3.new(1, 0, 0)
-		if state == 2 then
-			local side = (CELL - 7) / 2
-			local off = 3.5 + side / 2
-			habWall(parent, mid + t * off, side, alongZ, y0, HAB_H)
-			habWall(parent, mid - t * off, side, alongZ, y0, HAB_H)
-			habWall(parent, mid, 7, alongZ, y0 + 8.5, HAB_H - 8.5)
-			-- dark steel door frame
-			local fsz = alongZ and Vector3.new(1.25, 8.5, 0.35) or Vector3.new(0.35, 8.5, 1.25)
-			decal(parent, "DoorFrame", fsz, CFrame.new(Vector3.new(mid.X, y0 + 4.25, mid.Z) + t * 3.4), Color3.fromRGB(60, 62, 66), Enum.Material.Metal)
-			decal(parent, "DoorFrame", fsz, CFrame.new(Vector3.new(mid.X, y0 + 4.25, mid.Z) - t * 3.4), Color3.fromRGB(60, 62, 66), Enum.Material.Metal)
-			return
-		end
-
-		habWall(parent, mid, CELL, alongZ, y0, HAB_H)
-		local sgn = (rnd(cx, cz, 300 + dir) < 0.5) and 1 or -1
-		local n = alongZ and Vector3.new(sgn, 0, 0) or Vector3.new(0, 0, sgn)
-
-		-- painted cinder block courses
-		for _, h in ipairs({2.7, 5.4, 8.1}) do
-			decal(parent, "Seam", alongZ and Vector3.new(1.06, 0.1, CELL) or Vector3.new(CELL, 0.1, 1.06),
-				CFrame.new(mid.X, y0 + h, mid.Z), Color3.fromRGB(132, 134, 130), MH)
-		end
-		-- dirty lower band
-		decal(parent, "Grime", alongZ and Vector3.new(1.05, 1.5, CELL) or Vector3.new(CELL, 1.5, 1.05),
-			CFrame.new(mid.X, y0 + 0.75, mid.Z), HAB_DARK, MH)
-		-- water stain streak
-		if rnd(cx, cz, 310 + dir) < 0.35 then
-			local h = 4 + rnd(cx, cz, 312) * 3
-			local off = (rnd(cx, cz, 313) - 0.5) * 8
-			local p = Vector3.new(mid.X, y0 + HAB_H - h / 2 - 0.4, mid.Z) + t * off
-			decal(parent, "Stain", alongZ and Vector3.new(1.04, h, 0.7) or Vector3.new(0.7, h, 1.04), CFrame.new(p), Color3.fromRGB(138, 140, 134), MH, nil, 0.4)
-		end
-
-		local r = rnd(cx, cz, 301 + dir)
-		if r < 0.07 then
-			doubleDoor(parent, mid, alongZ, y0, n, t)
-		elseif r < 0.16 then
-			signPlate(parent, mid, alongZ, y0, n, t, sgn, cx, cz)
-		elseif r < 0.26 then
-			conduit(parent, mid, alongZ, y0, n, t, cx, cz)
-		elseif r < 0.31 then
-			extinguisher(parent, Vector3.new(mid.X, y0 + 3.2, mid.Z) + n * 0.8 + t * ((rnd(cx, cz, 331) - 0.5) * 6))
-		end
-	end
-
-	buildHabCell = function(cx, cz)
-		local f = Instance.new("Folder")
-		f.Name = "HabCell"
-		local pos = habPos(cx, cz)
-		local rx, rz = math.floor(cx / R), math.floor(cz / R)
-		local garage = (habInfo(rx, rz).kind == "garage")
-		local fy = HAB.Y
-		local cy = fy + HAB_H
-
-		-- wet concrete floor, expansion joints, cracks, oil
-		local fk = 1 + (rnd(cx, cz, 250) - 0.5) * 0.14
-		local floorCol = shade(Color3.fromRGB(108, 110, 108), fk)
-		local fl = mk(f, "Floor", Vector3.new(CELL, 1, CELL), CFrame.new(pos.X, fy - 0.5, pos.Z), floorCol, MH)
-		fl.Reflectance = 0.03
-		local jointCol = Color3.fromRGB(46, 48, 48)
-		decal(f, "Joint", Vector3.new(CELL, 0.03, 0.14), CFrame.new(pos.X, fy + 0.02, pos.Z - CELL / 2 + 0.07), jointCol, MH)
-		if cx % 2 == 0 then
-			decal(f, "Joint", Vector3.new(0.14, 0.03, CELL), CFrame.new(pos.X - CELL / 2 + 0.07, fy + 0.02, pos.Z), jointCol, MH)
-		end
-		if rnd(cx, cz, 252) < 0.28 then
-			crack(f, pos.X + (rnd(cx, cz, 253) - 0.5) * 6, fy + 0.025, pos.Z + (rnd(cx, cz, 254) - 0.5) * 6, cx, cz)
-		end
-		if rnd(cx, cz, 255) < 0.16 then
-			local d = 1.5 + rnd(cx, cz, 256) * 3
-			local o = decal(f, "Oil", Vector3.new(0.04, d, d),
-				CFrame.new(pos.X + (rnd(cx, cz, 257) - 0.5) * 7, fy + 0.03, pos.Z + (rnd(cx, cz, 258) - 0.5) * 7) * CFrame.Angles(0, 0, math.pi / 2),
-				Color3.fromRGB(26, 28, 28), MH, nil, 0.25)
-			o.Shape = Enum.PartType.Cylinder
-		end
-
-		-- water puddles that reflect the lights
-		if rnd(cx, cz, 251) < 0.26 then
-			local count = 1 + math.floor(rnd(cx, cz, 259) * 2.5)
-			for i = 1, count do
-				local d = 3 + rnd(cx, cz, 260 + i) * 6
-				local px = pos.X + (rnd(cx, cz, 263 + i) - 0.5) * (CELL - 4)
-				local pz = pos.Z + (rnd(cx, cz, 266 + i) - 0.5) * (CELL - 4)
-				local pud = decal(f, "Puddle", Vector3.new(0.05, d, d), CFrame.new(px, fy + 0.04, pz) * CFrame.Angles(0, 0, math.pi / 2),
-					Color3.fromRGB(46, 56, 60), Enum.Material.SmoothPlastic, 0.55, 0.12)
-				pud.Shape = Enum.PartType.Cylinder
-			end
-		end
-
-		-- road + parking markings, cars, speed bumps (open garages only)
-		if garage then
-			local white, yellow = Color3.fromRGB(205, 205, 195), Color3.fromRGB(215, 185, 60)
-			if cx % 2 == 0 then
-				decal(f, "RoadLine", Vector3.new(4, 0.04, 0.35), CFrame.new(pos.X, fy + 0.03, pos.Z), yellow)
-			end
-			if cz % 2 ~= 0 then
-				for _, ox in ipairs({-4, 4}) do
-					decal(f, "StallLine", Vector3.new(0.3, 0.04, 6), CFrame.new(pos.X + ox, fy + 0.03, pos.Z), white)
-				end
-				if rnd(cx, cz, 271) < 0.12 and not (cx == 0 and cz == 1) then
-					car(f, pos.X, pos.Z, (rnd(cx, cz, 272) < 0.5) and 0 or math.pi, cx * 131 + cz)
-				end
-			else
-				if rnd(cx, cz, 268) < 0.07 then
-					floorArrow(f, pos.X, pos.Z, (rnd(cx, cz, 269) < 0.5) and 0 or math.pi)
-				end
-				if rnd(cx, cz, 270) < 0.03 then
-					mk(f, "SpeedBump", Vector3.new(7, 0.4, 1.2), CFrame.new(pos.X, fy + 0.2, pos.Z), Color3.fromRGB(205, 175, 45), Enum.Material.Plastic)
-				end
-			end
-		end
-
-		-- ceiling, beams, pipes, sprinklers, cable tray, duct
-		mk(f, "Ceiling", Vector3.new(CELL, 1, CELL), CFrame.new(pos.X, cy + 0.5, pos.Z), Color3.fromRGB(100, 102, 102), MH)
-		local beamCol = Color3.fromRGB(122, 124, 122)
-		decal(f, "Beam", Vector3.new(CELL, 1.3, 0.9), CFrame.new(pos.X, cy - 0.65, pos.Z - CELL / 2 + 0.45), beamCol, MH)
-		if cx % 2 == 0 then
-			decal(f, "Beam", Vector3.new(0.9, 1.3, CELL), CFrame.new(pos.X - CELL / 2 + 0.45, cy - 0.65, pos.Z), beamCol, MH)
-		end
-		local pipe = decal(f, "Pipe", Vector3.new(CELL, 0.6, 0.6), CFrame.new(pos.X, cy - 1.8, pos.Z + 3), Color3.fromRGB(226, 226, 220), Enum.Material.Metal)
-		pipe.Shape = Enum.PartType.Cylinder
-		local pipe2 = decal(f, "Pipe", Vector3.new(CELL, 0.35, 0.35), CFrame.new(pos.X, cy - 1.4, pos.Z - 2.5), Color3.fromRGB(150, 156, 160), Enum.Material.Metal)
-		pipe2.Shape = Enum.PartType.Cylinder
-		local spr = decal(f, "SprinklerPipe", Vector3.new(CELL, 0.4, 0.4), CFrame.new(pos.X + 3.5, cy - 1.5, pos.Z) * CFrame.Angles(0, math.pi / 2, 0), Color3.fromRGB(190, 40, 36), Enum.Material.Metal)
-		spr.Shape = Enum.PartType.Cylinder
-		decal(f, "CableTray", Vector3.new(CELL, 0.2, 1.2), CFrame.new(pos.X, cy - 1.1, pos.Z - 4), Color3.fromRGB(150, 154, 158), Enum.Material.Metal)
-		decal(f, "Cables", Vector3.new(CELL, 0.15, 0.4), CFrame.new(pos.X, cy - 0.95, pos.Z - 4), Color3.fromRGB(24, 24, 24))
-		if rnd(cx, cz, 340) < 0.25 then
-			decal(f, "Duct", Vector3.new(8, 1.6, 2.6), CFrame.new(pos.X + (rnd(cx, cz, 341) - 0.5) * 3, cy - 1.6, pos.Z - 1.5), Color3.fromRGB(150, 152, 154), Enum.Material.Metal)
-		end
-
-		-- fluorescent tube fixtures on chains (some dead, some flicker)
-		local entry
-		if (cx + cz) % 2 == 0 or rnd(cx, cz, 342) < 0.35 then
-			local lx, lz = pos.X, pos.Z + 1
-			decal(f, "FixtureHousing", Vector3.new(4.6, 0.28, 1.0), CFrame.new(lx, cy - 0.95, lz), Color3.fromRGB(176, 178, 176), Enum.Material.Metal)
-			for _, sx in ipairs({-1.8, 1.8}) do
-				decal(f, "Chain", Vector3.new(0.08, 0.8, 0.08), CFrame.new(lx + sx, cy - 0.45, lz), Color3.fromRGB(90, 92, 92), Enum.Material.Metal)
-			end
-			local tube = mk(f, "Tube", Vector3.new(4.2, 0.12, 0.62), CFrame.new(lx, cy - 1.12, lz), Color3.fromRGB(236, 242, 248), Enum.Material.Neon)
-			tube.CanCollide = false
-			tube.CastShadow = false
-			local lit = rnd(cx, cz, 343) > 0.18
-			local pl
-			if (cx + cz) % 2 == 0 then
-				pl = Instance.new("PointLight")
-				pl.Range, pl.Brightness, pl.Shadows = 26, 0.55, false
-				pl.Color = Color3.fromRGB(225, 235, 250)
-				pl.Parent = tube
-			end
-			entry = {panel = tube, light = pl, base = lit, onColor = Color3.fromRGB(236, 242, 248), offColor = Color3.fromRGB(110, 112, 112)}
-			setLit(entry, lit and not habDark)
-		end
-
-		-- green emergency exit sign (stays glowing during a blackout, but gives no light)
-		if rnd(cx, cz, 344) < 0.05 then
-			local ex, ez = pos.X + 1, pos.Z - 2
-			decal(f, "ExitHousing", Vector3.new(1.8, 0.7, 0.3), CFrame.new(ex, cy - 1.7, ez), Color3.fromRGB(40, 40, 40), Enum.Material.Metal)
-			decal(f, "ExitGlow", Vector3.new(1.5, 0.5, 0.06), CFrame.new(ex, cy - 1.7, ez + 0.17), Color3.fromRGB(60, 230, 110), Enum.Material.Neon)
-			decal(f, "ExitGlow", Vector3.new(1.5, 0.5, 0.06), CFrame.new(ex, cy - 1.7, ez - 0.17), Color3.fromRGB(60, 230, 110), Enum.Material.Neon)
-		end
-
-		-- concrete pillars with a hazard stripe, painted letters, extinguishers
-		if garage and cx % 2 == 0 and cz % 2 == 0 and not (cx == 0 and cz == 0) then
-			local pil = mk(f, "Pillar", Vector3.new(3, HAB_H, 3), CFrame.new(pos.X, fy + HAB_H / 2, pos.Z), Color3.fromRGB(150, 150, 146), MH)
-			mk(f, "PillarBase", Vector3.new(3.4, 0.6, 3.4), CFrame.new(pos.X, fy + 0.3, pos.Z), HAB_DARK, MH)
-			decal(f, "HazardBand", Vector3.new(3.1, 0.7, 3.1), CFrame.new(pos.X, fy + 2.6, pos.Z), Color3.fromRGB(205, 175, 45), MH)
-			decal(f, "HazardBand", Vector3.new(3.1, 0.25, 3.1), CFrame.new(pos.X, fy + 3.1, pos.Z), Color3.fromRGB(30, 30, 30), MH)
-			if rnd(cx, cz, 345) < 0.45 then
-				local sg = Instance.new("SurfaceGui")
-				sg.Face = Enum.NormalId.Front
-				sg.Parent = pil
-				local tl = Instance.new("TextLabel")
-				tl.Size = UDim2.fromScale(1, 1)
-				tl.BackgroundTransparency = 1
-				tl.TextScaled = true
-				tl.Font = Enum.Font.GothamBold
-				tl.TextColor3 = Color3.fromRGB(30, 30, 30)
-				tl.Text = string.char(65 + math.floor(rnd(cx, cz, 346) * 8))
-				tl.Parent = sg
-			end
-			if rnd(cx, cz, 347) < 0.15 then
-				extinguisher(f, Vector3.new(pos.X + 0.8, fy + 3.4, pos.Z + 1.7))
-			end
-		end
-
-		-- clutter: cones, barrels, crates, rubble, a leaning board
-		if not (cx == 0 and cz == 0) then
-			local r = rnd(cx, cz, 290)
-			local ox, oz = pos.X + (rnd(cx, cz, 291) - 0.5) * 7, pos.Z + (rnd(cx, cz, 292) - 0.5) * 7
-			if r < 0.025 then
-				cone(f, ox, oz)
-				cone(f, ox + 1.5, oz + 0.6)
-			elseif r < 0.05 then
-				barrel(f, ox, oz)
-				if rnd(cx, cz, 293) < 0.5 then barrel(f, ox + 1.8, oz + 0.4) end
-			elseif r < 0.075 then
-				crates(f, ox, oz, rnd(cx, cz, 294) * 6)
-			elseif r < 0.095 then
-				rubble(f, ox, oz, cx, cz)
-			elseif r < 0.125 then
-				mk(f, "Board", Vector3.new(0.2, 6, 3.4), CFrame.new(ox, fy + 2.9, oz) * CFrame.Angles(0, rnd(cx, cz, 295) * 6, math.rad(12)), Color3.fromRGB(190, 160, 112), Enum.Material.Wood)
-			end
-		end
-
-		-- concrete block walls (owned by this cell: east + north edge) + posts
-		buildEdge(f, cx, cz, 1, habEdge(cx, cz, 1))
-		buildEdge(f, cx, cz, 2, habEdge(cx, cz, 2))
-		if postNeeded(habEdge, cx, cz) then
-			local pp = pos + Vector3.new(CELL / 2, 0, CELL / 2)
-			mk(f, "HPost", Vector3.new(1.3, HAB_H, 1.3), CFrame.new(pp.X, fy + HAB_H / 2, pp.Z), HAB_WALL, MH)
-		end
-
-		f.Parent = rootFolder
-		cells[ckey3(cx, cz, 0)] = {folder = f, x = cx, z = cz, lv = 0, entry = entry}
-	end
-end
-
---// ================= HABITABLE ZONE BLACKOUTS =================
-local habFlickAcc = 0
-
-local function habSetAllLights(on)
-	for _, c in pairs(cells) do
-		local e = c.entry
-		if e then setLit(e, on and e.base) end
-	end
-end
-
--- every 20s: the lights flicker, then die for 20s (sound), then flicker back
-local function updateHabPower(dt)
-	if levelMode ~= "habitable" or not habEnabled then return end
-	habTimer -= dt
-	if habPhase == "on" then
-		if habTimer <= 0 then
-			habPhase = "warn"
-			habTimer = HAB_WARN
-		end
-	elseif habPhase == "warn" then
-		habFlickAcc += dt
-		if habFlickAcc >= 0.08 then
-			habFlickAcc = 0
-			for _, c in pairs(cells) do
-				local e = c.entry
-				if e then setLit(e, e.base and math.random() < 0.4) end
-			end
-		end
-		if habTimer <= 0 then
-			habPhase = "off"
-			habTimer = HAB_OUT
-			habDark = true
-			habSetAllLights(false)
-			playSfx(ID.blackout, 3)
-		end
-	elseif habPhase == "off" then
-		if habTimer <= 0 then
-			habPhase = "restore"
-			habTimer = 1.8
-			habDark = false
-		end
-	else
-		habFlickAcc += dt
-		if habFlickAcc >= 0.1 then
-			habFlickAcc = 0
-			for _, c in pairs(cells) do
-				local e = c.entry
-				if e then setLit(e, e.base and math.random() < 0.6) end
-			end
-		end
-		if habTimer <= 0 then
-			habPhase = "on"
-			habTimer = HAB_CYCLE
-			habDark = false
-			habSetAllLights(true)
-		end
-	end
-end
-
---// ================= PROPS (backrooms only) =================
-local placeProp
-do
-	local function pickSide(cx, cz, rng)
-		local sides = {}
-		if edge(cx, cz, 1) == 0 then sides[#sides + 1] = Vector3.new(1, 0, 0) end
-		if edge(cx, cz, 2) == 0 then sides[#sides + 1] = Vector3.new(0, 0, 1) end
-		if edge(cx - 1, cz, 1) == 0 then sides[#sides + 1] = Vector3.new(-1, 0, 0) end
-		if edge(cx, cz - 1, 2) == 0 then sides[#sides + 1] = Vector3.new(0, 0, -1) end
-		if #sides == 0 then return nil end
-		return sides[rng:NextInteger(1, #sides)]
-	end
-
-	placeProp = function(parent, tpl, cx, cz, isChair)
-		local rng = Random.new((cx * 7919 + cz * 104729 + SEED * 31) % 2147483647)
-		local m = tpl:Clone()
-		if not m then return end
-
-		-- sometimes stretched / weird
-		if rng:NextNumber() < (isChair and 0.15 or 0.30) then
-			local k, sc = rng:NextInteger(1, 3), nil
-			if k == 1 then
-				sc = Vector3.new(rng:NextNumber(0.6, 1.2), rng:NextNumber(1.8, 3.2), rng:NextNumber(0.6, 1.2))
-			elseif k == 2 then
-				sc = Vector3.new(rng:NextNumber(1.8, 3), rng:NextNumber(0.4, 0.8), rng:NextNumber(1.2, 2.4))
-			else
-				sc = Vector3.new(rng:NextNumber(0.4, 0.7), rng:NextNumber(0.8, 1.3), rng:NextNumber(1.8, 3))
-			end
-			stretch(m, sc)
-		end
-
-		local roll, yaw = rng:NextNumber(), rng:NextNumber(0, math.pi * 2)
-		local mode
-		if roll < 0.30 then mode = "floor"
-		elseif roll < 0.55 then mode = "sunk"
-		elseif roll < 0.75 then mode = "wall"
-		elseif roll < 0.90 then mode = "tilt"
-		else mode = "flip" end
-
-		local rot
-		if mode == "tilt" then
-			rot = CFrame.Angles(rng:NextNumber(-0.8, 0.8), yaw, rng:NextNumber(-0.8, 0.8))
-		elseif mode == "flip" then
-			rot = CFrame.Angles(math.pi, yaw, 0)
-		else
-			rot = CFrame.Angles(0, yaw, 0)
-		end
-		applyCF(m, rot)
-
-		local mn, mx = aabb(m)
-		local ctr, sz = (mn + mx) / 2, mx - mn
-		local pos = cellPos(cx, cz)
-		local tx = pos.X + rng:NextNumber(-CELL / 2 + 3, CELL / 2 - 3)
-		local tz = pos.Z + rng:NextNumber(-CELL / 2 + 3, CELL / 2 - 3)
-		local sink = 0
-		if mode == "sunk" then sink = sz.Y * rng:NextNumber(0.3, 0.65)
-		elseif mode == "tilt" then sink = sz.Y * rng:NextNumber(0.05, 0.3)
-		elseif mode == "flip" then sink = sz.Y * rng:NextNumber(0, 0.12) end
-
-		if mode == "wall" then
-			local n = pickSide(cx, cz, rng)
-			if n then
-				local half = (n.X ~= 0) and sz.X / 2 or sz.Z / 2
-				local depth = half * 2 * rng:NextNumber(0.15, 0.7)
-				local dist = CELL / 2 - half + depth
-				if n.X ~= 0 then
-					tx = pos.X + n.X * dist
-				else
-					tz = pos.Z + n.Z * dist
-				end
-			end
-		end
-
-		applyCF(m, CFrame.new(tx - ctr.X, BASE.Y - sink - mn.Y, tz - ctr.Z))
-		m.Parent = parent
-	end
-end
-
---// ================= BACKROOMS CELLS =================
-local function buildCell(cx, cz, lv)
-	-- big multi-floor map is built as one piece, its cells stay empty
-	if lv == 0 and inRect(mega, cx, cz) then
-		local ef = Instance.new("Folder")
-		ef.Name = "Empty"
-		ef.Parent = rootFolder
-		cells[ckey3(cx, cz, 0)] = {folder = ef, x = cx, z = cz, lv = 0}
-		return
-	end
-	-- the infinite PoolRooms (every floor)
-	if isPoolCell(cx, cz) then
-		buildPoolCell(cx, cz, lv)
-		return
-	end
-
-	local f = Instance.new("Folder")
-	f.Name = "Cell"
-	local pos = cellPos(cx, cz)
-	local zin = inRect(zone, cx, cz)
-	local ceilY = zin and zone.h or WALL_H
-	local info = regionInfo(math.floor(cx / R), math.floor(cz / R))
-	local pal = info.pal
-	local farFromSpawn = not (math.abs(cx) <= 2 and math.abs(cz) <= 2)
-
-	-- plain carpet (not fabric), square pits, stains
-	local fk = 1 + (rnd(cx, cz, 3) - 0.5) * 0.08
-	if rnd(cx, cz, 4) < 0.10 then fk = fk * 0.85 end
-	local carpet = shade(pal.carpet, fk)
-	local pit = (not zin) and farFromSpawn and rnd(cx, cz, 12) < CH.PIT
-	if pit then
-		holeBoxes(f, pos.X, pos.Z, 6, BASE.Y - 0.5, 1, carpet, CARPET_MAT)
-		local dk = shade(carpet, 0.45)
-		mk(f, "PitBottom", Vector3.new(6, 1, 6), CFrame.new(pos.X, BASE.Y - 4.5, pos.Z), dk, CARPET_MAT)
-		mk(f, "PitWall", Vector3.new(6, 4, 0.4), CFrame.new(pos.X, BASE.Y - 2, pos.Z + 2.8), dk, CARPET_MAT)
-		mk(f, "PitWall", Vector3.new(6, 4, 0.4), CFrame.new(pos.X, BASE.Y - 2, pos.Z - 2.8), dk, CARPET_MAT)
-		mk(f, "PitWall", Vector3.new(0.4, 4, 6), CFrame.new(pos.X + 2.8, BASE.Y - 2, pos.Z), dk, CARPET_MAT)
-		mk(f, "PitWall", Vector3.new(0.4, 4, 6), CFrame.new(pos.X - 2.8, BASE.Y - 2, pos.Z), dk, CARPET_MAT)
-	else
-		mk(f, "Floor", Vector3.new(CELL, 1, CELL), CFrame.new(pos.X, BASE.Y - 0.5, pos.Z), carpet, CARPET_MAT)
-		if rnd(cx, cz, 8) < 0.10 then
-			local d = 3 + rnd(cx, cz, 9) * 4
-			local sx = pos.X + (rnd(cx, cz, 10) - 0.5) * 4
-			local sz = pos.Z + (rnd(cx, cz, 11) - 0.5) * 4
-			local st = mk(f, "Stain", Vector3.new(0.05, d, d), CFrame.new(sx, BASE.Y + 0.08, sz) * CFrame.Angles(0, 0, math.pi / 2), shade(carpet, 0.7), CARPET_MAT)
-			st.Shape = Enum.PartType.Cylinder
-			st.Transparency = 0.3
-			st.CastShadow = false
-		end
-	end
-
-	-- lights: grids of white squares. open halls get a light in every cell, corridors every second cell
-	local checker = (cx + cz) % 2 == 0
-	local hasLight = checker or info.s >= 3
-	local shaft = (not zin) and farFromSpawn and (not hasLight) and rnd(cx, cz, 13) < CH.SHAFT
-	if shaft then
-		holeBoxes(f, pos.X, pos.Z, 5, BASE.Y + ceilY + 0.5, 1, pal.ceil, Enum.Material.Plastic)
-		local dk = Color3.fromRGB(35, 32, 22)
-		local sy = BASE.Y + ceilY + 7
-		mk(f, "ShaftWall", Vector3.new(5, 14, 0.4), CFrame.new(pos.X, sy, pos.Z + 2.3), dk, Enum.Material.Plastic)
-		mk(f, "ShaftWall", Vector3.new(5, 14, 0.4), CFrame.new(pos.X, sy, pos.Z - 2.3), dk, Enum.Material.Plastic)
-		mk(f, "ShaftWall", Vector3.new(0.4, 14, 5), CFrame.new(pos.X + 2.3, sy, pos.Z), dk, Enum.Material.Plastic)
-		mk(f, "ShaftWall", Vector3.new(0.4, 14, 5), CFrame.new(pos.X - 2.3, sy, pos.Z), dk, Enum.Material.Plastic)
-		mk(f, "ShaftCap", Vector3.new(5.4, 0.6, 5.4), CFrame.new(pos.X, BASE.Y + ceilY + 14.3, pos.Z), dk, Enum.Material.Plastic)
-	else
-		mk(f, "Ceiling", Vector3.new(CELL, 1, CELL), CFrame.new(pos.X, BASE.Y + ceilY + 0.5, pos.Z), pal.ceil, Enum.Material.Plastic)
-		if CEILING_GRID then
-			local sy = BASE.Y + ceilY - 0.06
-			local gc = shade(pal.ceil, 0.62)
-			local P = Enum.Material.Plastic
-			mk(f, "Grid", Vector3.new(CELL, 0.12, 0.25), CFrame.new(pos.X, sy, pos.Z), gc, P)
-			mk(f, "Grid", Vector3.new(0.25, 0.12, CELL), CFrame.new(pos.X, sy, pos.Z), gc, P)
-			mk(f, "Grid", Vector3.new(0.25, 0.12, CELL), CFrame.new(pos.X - CELL / 2, sy, pos.Z), gc, P)
-			mk(f, "Grid", Vector3.new(CELL, 0.12, 0.25), CFrame.new(pos.X, sy, pos.Z - CELL / 2), gc, P)
-		end
-	end
-
-	local entry
-	if hasLight then
-		entry = makeLight(f, pos.X, BASE.Y + ceilY, pos.Z, rnd(cx, cz, 5) > pal.off, checker)
-	end
-
-	-- walls (owned by this cell: east + north edge)
-	local wcol = shade(pal.wall, 1 + (rnd(cx, cz, 7) - 0.5) * 0.06)
-	if not adjSpecial(cx, cz, 1) then buildEdgeWall(f, cx, cz, 1, edge(cx, cz, 1), wcol) end
-	if not adjSpecial(cx, cz, 2) then buildEdgeWall(f, cx, cz, 2, edge(cx, cz, 2), wcol) end
-	if needPost(cx, cz, 0) then
-		local pp = pos + Vector3.new(CELL / 2, 0, CELL / 2)
-		mk(f, "Post", Vector3.new(WALL_T + 0.2, WALL_H, WALL_T + 0.2), CFrame.new(pp.X, BASE.Y + WALL_H / 2, pp.Z), wcol, MAT_WALL)
-	end
-
-	-- big square pillars with trim in open zones (like the photos)
-	if not zin and info.s >= 3 and not (math.abs(cx) <= 1 and math.abs(cz) <= 1) then
-		if rnd(cx, cz, 60) < (info.s == 6 and 0.22 or 0.08) then
-			local ox = (rnd(cx, cz, 61) - 0.5) * 4
-			local oz = (rnd(cx, cz, 62) - 0.5) * 4
-			local pc = shade(pal.wall, 0.97)
-			mk(f, "Pillar", Vector3.new(3.6, WALL_H, 3.6), CFrame.new(pos.X + ox, BASE.Y + WALL_H / 2, pos.Z + oz), pc, MAT_WALL)
-			mk(f, "PillarTrim", Vector3.new(4.0, 0.9, 4.0), CFrame.new(pos.X + ox, BASE.Y + 0.45, pos.Z + oz), C_BOARD, Enum.Material.Plastic)
-		end
-	end
-
-	-- props (backrooms only)
-	if not zin and not (cx == 0 and cz == 0) then
-		local r = rnd(cx, cz, 70)
-		pcall(function()
-			if chairTpl and r < CH.CHAIR then
-				placeProp(f, chairTpl, cx, cz, true)
-			elseif #templates > 0 and r < CH.CHAIR + CH.PROP then
-				local idx = math.floor(rnd(cx, cz, 71) * #templates) + 1
-				placeProp(f, templates[idx], cx, cz, false)
-			end
-		end)
-	end
-
-	f.Parent = rootFolder
-	cells[ckey3(cx, cz, 0)] = {folder = f, x = cx, z = cz, lv = 0, entry = entry}
-end
-
---// ================= TIME-SLICED GENERATION (fast, no hitching) =================
--- decides what is missing / too far (cheap), the queue is then built a few milliseconds per frame
-local function refillQueue(cx, cz, lvP)
-	if not rootFolder then return end
-	buildQueue, queueI = {}, 1
-	if levelMode == "habitable" then
-		for dz = -LOAD_R, LOAD_R do
-			for dx = -LOAD_R, LOAD_R do
-				local x, z = cx + dx, cz + dz
-				if not cells[ckey3(x, z, 0)] then
-					buildQueue[#buildQueue + 1] = {x, z, 0, dx * dx + dz * dz}
-				end
-			end
-		end
-	else
-		for dz = -LOAD_R, LOAD_R do
-			for dx = -LOAD_R, LOAD_R do
-				local x, z = cx + dx, cz + dz
-				local d2 = dx * dx + dz * dz
-				if isPoolCell(x, z) then
-					for lv = lvP - 1, lvP + 1 do
-						if (lv == lvP or d2 <= 16) and not cells[ckey3(x, z, lv)] then
-							buildQueue[#buildQueue + 1] = {x, z, lv, d2 + (lv == lvP and 0 or 1000)}
-						end
-					end
-				elseif math.abs(lvP) <= 1 and not cells[ckey3(x, z, 0)] then
-					buildQueue[#buildQueue + 1] = {x, z, 0, d2}
-				end
-			end
-		end
-	end
-	table.sort(buildQueue, function(a, b) return a[4] < b[4] end)
-	-- unload what is far away
-	for k, c in pairs(cells) do
-		if math.max(math.abs(c.x - cx), math.abs(c.z - cz)) > UNLOAD_R or math.abs(c.lv - lvP) > 1 then
-			c.folder:Destroy()
-			if c.water then clearWaterList(c.water) end
-			if c.site then releaseSite(c.site) end
-			cells[k] = nil
-		end
-	end
-end
-
-local function processQueue(budget)
-	if not rootFolder then return end
-	local t0 = os.clock()
-	while queueI <= #buildQueue and os.clock() - t0 < budget do
-		local m = buildQueue[queueI]
-		queueI += 1
-		if not cells[ckey3(m[1], m[2], m[3])] then
-			LV = m[3]
-			local fn = (levelMode == "habitable") and buildHabCell or buildCell
-			local ok, err = pcall(fn, m[1], m[2], m[3])
-			LV = 0
-			if not ok then
-				warn("[Backrooms] cell error: " .. tostring(err))
-				local ef = Instance.new("Folder")
-				ef.Parent = rootFolder
-				cells[ckey3(m[1], m[2], m[3])] = {folder = ef, x = m[1], z = m[2], lv = m[3]}
-			end
-		end
-	end
-end
-
-local nextFlicker = 0
-local function updateFlicker(now, cx, cz)
-	-- the Habitable Zone blackout system owns the lights while it is not in the "on" phase
-	if levelMode == "habitable" and habEnabled and habPhase ~= "on" then return end
-	if now >= nextFlicker then
-		nextFlicker = now + math.random(4, 12)
-		local tx, tz = cx + math.random(-4, 4), cz + math.random(-4, 4)
-		for dx = -2, 2 do
-			for dz = -2, 2 do
-				local c = cells[ckey3(tx + dx, tz + dz, playerLv)]
-				local e = c and c.entry
-				if e and e.base and ((dx == 0 and dz == 0) or math.random() < 0.5) then
-					flicker[e] = {stop = now + 5, nxt = 0}
-				end
-			end
-		end
-		if mega and mega.entries and #mega.entries > 0 and math.random() < 0.5 then
-			for _ = 1, 5 do
-				local e = mega.entries[math.random(#mega.entries)]
-				if e.base and e.panel.Parent then flicker[e] = {stop = now + 5, nxt = 0} end
-			end
-		end
-	end
-	for e, f in pairs(flicker) do
-		if not e.panel.Parent then
-			flicker[e] = nil
-		elseif now >= f.stop then
-			setLit(e, e.base)
-			flicker[e] = nil
-		elseif now >= f.nxt then
-			setLit(e, math.random() < 0.4)
-			f.nxt = now + 0.03 + math.random() * 0.22
-		end
-	end
-end
-
---// ================= BIG MULTI-FLOOR MAPS =================
-local buildMega, buildGrand
-do
-	local function stairCells(M, k)
-		if M.tower then
-			local sx = (k % 2 == 1) and (M.x0 + 1) or (M.x1 - 3)
-			local sz = (k % 2 == 1) and M.z1 or (M.z1 - 1)
-			return sx, sz
-		end
-		local sz = M.z0 + 1 + math.floor(rnd(k, 7, 100) * 7)
-		local sx = (k % 2 == 1) and (M.x0 + 1) or (M.x1 - 3)
-		return sx, sz
-	end
-
-	local function layered(parent, cx, cz, sx, sz, yTop, pal)
-		mk(parent, "FloorTop", Vector3.new(sx, 0.35, sz), CFrame.new(cx, BASE.Y + yTop - 0.175, cz), pal.carpet, CARPET_MAT)
-		mk(parent, "FloorUnder", Vector3.new(sx, 0.65, sz), CFrame.new(cx, BASE.Y + yTop - 0.675, cz), pal.ceil, Enum.Material.Plastic)
-	end
-
-	local function layeredHole(parent, cx, cz, hs, yTop, pal)
-		local strip = (CELL - hs) / 2
-		layered(parent, cx, cz + hs / 2 + strip / 2, CELL, strip, yTop, pal)
-		layered(parent, cx, cz - hs / 2 - strip / 2, CELL, strip, yTop, pal)
-		layered(parent, cx - hs / 2 - strip / 2, cz, strip, hs, yTop, pal)
-		layered(parent, cx + hs / 2 + strip / 2, cz, strip, hs, yTop, pal)
-	end
-
-	-- the escalator model, fitted to a 24 stud run / one floor of height, with an invisible ramp under it so it is always walkable
-	local function placeEscalator(parent, xs, y0, zc)
-		local wrapper = loadAsset(ID.escalator)
-		if not wrapper then return false end
-		local m = finishTemplate(wrapper, false, nil)
-		if not m then return false end
-		local mn, mx = aabb(m)
-		local s = mx - mn
-		if s.Z > s.X then
-			applyCF(m, CFrame.Angles(0, math.pi / 2, 0))
-			mn, mx = aabb(m)
-			s = mx - mn
-		end
-		-- the high end goes on +X
-		local hiSum, hiN = 0, 0
-		for _, p in ipairs(m:GetDescendants()) do
-			if p:IsA("BasePart") and p.Position.Y > mn.Y + s.Y * 0.65 then
-				hiSum += p.Position.X
-				hiN += 1
-			end
-		end
-		if hiN > 0 and hiSum / hiN < (mn.X + mx.X) / 2 then
-			applyCF(m, CFrame.Angles(0, math.pi, 0))
-			mn, mx = aabb(m)
-			s = mx - mn
-		end
-		stretch(m, Vector3.new(24 / math.max(s.X, 0.1), FH / math.max(s.Y, 0.1), 10 / math.max(s.Z, 0.1)))
-		mn, mx = aabb(m)
-		applyCF(m, CFrame.new(xs + 12 - (mn.X + mx.X) / 2, y0 - mn.Y, zc - (mn.Z + mx.Z) / 2))
-		m.Name = "Escalator"
-		m.Parent = parent
-		local ramp = rampPart(parent, Vector3.new(xs, y0, zc), Vector3.new(xs + 24, y0 + FH, zc), 8, Color3.new(1, 1, 1), Enum.Material.Plastic)
-		ramp.Transparency = 1
-		ramp.CastShadow = false
-		return true
-	end
-
-	buildMega = function(dirIdx, variant)
-		local tower = (variant ~= "mega")
-		local escalator = (variant == "escalator")
-		local n
-		if variant == "tower" then n = math.random(5, 9)
-		elseif escalator then n = 2
-		else n = (math.random() < 0.55) and 2 or 8 end
-		local dv = DIRS[dirIdx]
-		local dist = 8 + math.random(0, 3)
-		local hx, hz = dv[1] * dist, dv[2] * dist
-		local M = {x0 = hx - 4, x1 = hx + 4, z0 = hz - 4, z1 = hz + 4, n = n, entries = {}, tower = tower}
-		local pal = PALETTES[1]
-		local f = Instance.new("Folder")
-		f.Name = escalator and "EscalatorHall" or (tower and "AtriumTower" or "MegaRoom")
-
-		local xmin, xmax = BASE.X + (M.x0 - 0.5) * CELL, BASE.X + (M.x1 + 0.5) * CELL
-		local zmin, zmax = BASE.Z + (M.z0 - 0.5) * CELL, BASE.Z + (M.z1 + 0.5) * CELL
-		local W = xmax - xmin
-		local mx0, mz0 = (xmin + xmax) / 2, (zmin + zmax) / 2
-		local topY = n * FH - 1
-
-		mk(f, "Floor", Vector3.new(W, 1, W), CFrame.new(mx0, BASE.Y - 0.5, mz0), pal.carpet, CARPET_MAT)
-		mk(f, "Ceiling", Vector3.new(W, 1, W), CFrame.new(mx0, BASE.Y + topY + 0.5, mz0), pal.ceil, Enum.Material.Plastic)
-
-		-- what each floor cell looks like: slab / full hole / square hole (no railings anywhere)
-		local function state(k, x, z)
-			local rs, rz = stairCells(M, k)
-			if z == rz and (x == rs or x == rs + 1) then return "hole" end
-			if z == rz and x == rs + 2 then return "slab" end
-			if k + 1 <= n - 1 then
-				local ns, nz = stairCells(M, k + 1)
-				if z == nz and (x == ns or x == ns + 1) then return "slab" end
-			end
-			if tower and x >= M.x0 + 2 and x <= M.x1 - 2 and z >= M.z0 + 2 and z <= M.z1 - 2 then return "hole" end
-			local r = rnd(x, z, 200 + k)
-			if tower then
-				if r < 0.04 then return "hole" elseif r < 0.09 then return "sq" end
-			else
-				if r < 0.06 then return "hole" elseif r < 0.17 then return "sq" end
-			end
-			return "slab"
-		end
-
-		for k = 1, n - 1 do
-			for x = M.x0, M.x1 do
-				for z = M.z0, M.z1 do
-					local st = state(k, x, z)
-					local p = cellPos(x, z)
-					if st == "slab" then
-						layered(f, p.X, p.Z, CELL, CELL, k * FH, pal)
-					elseif st == "sq" then
-						layeredHole(f, p.X, p.Z, 6, k * FH, pal)
-					end
-				end
-			end
-		end
-
-		-- white square lights under every ceiling
-		for k = 0, n - 1 do
-			local ceilWorld = BASE.Y + (k + 1) * FH - 1
-			for x = M.x0, M.x1 do
-				for z = M.z0, M.z1 do
-					if (x - M.x0) % 2 == 0 and (z - M.z0) % 2 == 0 then
-						local okSlab = (k + 1 > n - 1) or state(k + 1, x, z) == "slab"
-						if okSlab then
-							local p = cellPos(x, z)
-							local pl = (((x - M.x0) / 2 + (z - M.z0) / 2 + k) % 2 == 0)
-							local e = makeLight(f, p.X, ceilWorld, p.Z, rnd(x, z, 300 + k) > 0.15, pl)
-							M.entries[#M.entries + 1] = e
-						end
-					end
-				end
-			end
-		end
-
-		-- pillars (only in the normal mega room, the tower / escalator hall stay open)
-		if not tower then
-			for i = 1, 4 do
-				for j = 1, 4 do
-					local cxp, czp = xmin + 24 * i, zmin + 24 * j
-					mk(f, "Pillar", Vector3.new(3.4, topY, 3.4), CFrame.new(cxp, BASE.Y + topY / 2, czp), shade(pal.wall, 0.97), MAT_WALL)
-				end
-			end
-		end
-
-		-- stairs (or the escalator) between floors
-		for k = 1, n - 1 do
-			local rs, rz = stairCells(M, k)
-			local xs, y0, zc = BASE.X + (rs - 0.5) * CELL, BASE.Y + (k - 1) * FH, BASE.Z + rz * CELL
-			local done = false
-			if escalator and k == 1 then
-				local ok, res = pcall(placeEscalator, f, xs, y0, zc)
-				done = ok and res
-			end
-			if not done then
-				buildStairs(f, xs, y0, zc, FH, 16, 10, pal.carpet, CARPET_MAT)
-			end
-		end
-
-		-- outer skirt closes the upper floors
-		local topAbs = BASE.Y + topY + 1
-		local hh = topAbs - (BASE.Y + WALL_H)
-		local cy = BASE.Y + WALL_H + hh / 2
-		local wc = pal.wall
-		mk(f, "Skirt", Vector3.new(W + WALL_T, hh, WALL_T), CFrame.new(mx0, cy, zmin), wc, MAT_WALL)
-		mk(f, "Skirt", Vector3.new(W + WALL_T, hh, WALL_T), CFrame.new(mx0, cy, zmax), wc, MAT_WALL)
-		mk(f, "Skirt", Vector3.new(WALL_T, hh, W + WALL_T), CFrame.new(xmin, cy, mz0), wc, MAT_WALL)
-		mk(f, "Skirt", Vector3.new(WALL_T, hh, W + WALL_T), CFrame.new(xmax, cy, mz0), wc, MAT_WALL)
-
-		-- tower: dark room doors on every floor along the inner walls
-		if tower and not escalator then
-			local dc = Color3.fromRGB(72, 54, 36)
-			for k = 1, n - 1 do
-				local yc = BASE.Y + k * FH + 4.5
-				for i = 0, 2 do
-					local p = cellPos(M.x0 + 1 + i * 3, M.z0 + 1 + i * 3)
-					mk(f, "RoomDoor", Vector3.new(4, 9, 0.3), CFrame.new(p.X, yc, zmin + 0.55), dc, Enum.Material.Wood)
-					mk(f, "RoomDoor", Vector3.new(4, 9, 0.3), CFrame.new(p.X, yc, zmax - 0.55), dc, Enum.Material.Wood)
-					mk(f, "RoomDoor", Vector3.new(0.3, 9, 4), CFrame.new(xmin + 0.55, yc, p.Z), dc, Enum.Material.Wood)
-					mk(f, "RoomDoor", Vector3.new(0.3, 9, 4), CFrame.new(xmax - 0.55, yc, p.Z), dc, Enum.Material.Wood)
-				end
-			end
-		end
-
-		f.Parent = rootFolder
-		M.wxmin, M.wxmax, M.wzmin, M.wzmax = xmin, xmax, zmin, zmax
-		mega = M
-	end
-
-	-- THE GRAND HALL: very very big and very tall, 5 exposed floors around a huge open void, no barriers at all
-	local GRAND_SIDES = {{true, true}, {false, false}, {false, true}, {true, false}} -- {left, north} per flight
-	buildGrand = function(dirIdx)
-		local dv = DIRS[dirIdx]
-		local dist = 11 + math.random(0, 3)
-		local hx, hz = dv[1] * dist, dv[2] * dist
-		local M = {x0 = hx - 7, x1 = hx + 7, z0 = hz - 7, z1 = hz + 7, n = 5, entries = {}, tower = true, grand = true}
-		local pal = PALETTES[1]
-		local f = Instance.new("Folder")
-		f.Name = "GrandHall"
-
-		local xmin, xmax = BASE.X + (M.x0 - 0.5) * CELL, BASE.X + (M.x1 + 0.5) * CELL
-		local zmin, zmax = BASE.Z + (M.z0 - 0.5) * CELL, BASE.Z + (M.z1 + 0.5) * CELL
-		local W = xmax - xmin
-		local mx0, mz0 = (xmin + xmax) / 2, (zmin + zmax) / 2
-		local topY = 5 * GFH - 1
-
-		mk(f, "Floor", Vector3.new(W, 1, W), CFrame.new(mx0, BASE.Y - 0.5, mz0), pal.carpet, CARPET_MAT)
-		mk(f, "Ceiling", Vector3.new(W, 1, W), CFrame.new(mx0, BASE.Y + topY + 0.5, mz0), pal.ceil, Enum.Material.Plastic)
-
-		local function stairOf(k)
-			local s = GRAND_SIDES[k]
-			return s[1] and (M.x0 + 2) or (M.x1 - 4), s[2] and (M.z1 - 1) or (M.z0 + 1)
-		end
-		local function inVoid(x, z)
-			return x >= M.x0 + 3 and x <= M.x1 - 3 and z >= M.z0 + 3 and z <= M.z1 - 3
-		end
-		local function isSlab(k, x, z)
-			if inVoid(x, z) then return false end
-			local sx, sz = stairOf(k)
-			if z == sz and (x == sx or x == sx + 1) then return false end
-			return true
-		end
-
-		-- exposed floors 2..5 (big merged slabs, one box per run of cells)
-		for k = 1, 4 do
-			for z = M.z0, M.z1 do
-				local runStart
-				for x = M.x0, M.x1 + 1 do
-					local slab = (x <= M.x1) and isSlab(k, x, z)
-					if slab and not runStart then runStart = x end
-					if (not slab) and runStart then
-						local x0w = BASE.X + (runStart - 0.5) * CELL
-						local x1w = BASE.X + (x - 0.5) * CELL
-						mk(f, "FloorSlab", Vector3.new(x1w - x0w, 1, CELL), CFrame.new((x0w + x1w) / 2, BASE.Y + k * GFH - 0.5, BASE.Z + z * CELL), pal.carpet, CARPET_MAT)
-						runStart = nil
-					end
-				end
-			end
-		end
-
-		-- lights under every floor
-		for k = 0, 4 do
-			local ceilWorld = BASE.Y + (k + 1) * GFH - 1
-			for x = M.x0, M.x1 do
-				for z = M.z0, M.z1 do
-					if (x - M.x0) % 3 == 1 and (z - M.z0) % 3 == 1 then
-						local okSlab = (k == 4) or isSlab(k + 1, x, z)
-						if okSlab then
-							local p = cellPos(x, z)
-							M.entries[#M.entries + 1] = makeLight(f, p.X, ceilWorld, p.Z, rnd(x, z, 320 + k) > 0.12, true)
-						end
-					end
-				end
-			end
-		end
-		-- big soft lights hanging in the huge void
-		local function glow(x, y, z, range, bright)
-			local a = mk(f, "Glow", Vector3.new(0.4, 0.4, 0.4), CFrame.new(x, y, z), Color3.new(1, 1, 1), Enum.Material.SmoothPlastic)
-			a.Transparency = 1
-			a.CanCollide = false
-			a.CastShadow = false
-			local pl = Instance.new("PointLight")
-			pl.Range, pl.Brightness, pl.Shadows = range, bright, false
-			pl.Color = Color3.fromRGB(255, 244, 214)
-			pl.Parent = a
-		end
-		for _, y in ipairs({10, 40, 70, 100}) do glow(mx0, BASE.Y + y, mz0, 90, 0.7) end
-		for _, o in ipairs({{-30, -30}, {30, -30}, {-30, 30}, {30, 30}}) do glow(mx0 + o[1], BASE.Y + 30, mz0 + o[2], 80, 0.5) end
-
-		-- stairs between the floors
-		for k = 1, 4 do
-			local sx, sz = stairOf(k)
-			buildStairs(f, BASE.X + (sx - 0.5) * CELL, BASE.Y + (k - 1) * GFH, BASE.Z + sz * CELL, GFH, 24, 10, pal.carpet, CARPET_MAT)
-		end
-
-		-- outer walls (full height) with a doorway on every side at ground level
-		local hh = topY + 1
-		local wc = pal.wall
-		local gw = 7
-		local function side(alongX, fixed, from, to, center)
-			local function piece(a, b, y0, y1)
-				if b - a < 0.05 then return end
-				local sz = alongX and Vector3.new(b - a, y1 - y0, WALL_T) or Vector3.new(WALL_T, y1 - y0, b - a)
-				local cf = alongX and CFrame.new((a + b) / 2, BASE.Y + (y0 + y1) / 2, fixed) or CFrame.new(fixed, BASE.Y + (y0 + y1) / 2, (a + b) / 2)
-				mk(f, "GWall", sz, cf, wc, MAT_WALL)
-			end
-			piece(from, center - gw / 2, 0, hh)
-			piece(center + gw / 2, to, 0, hh)
-			piece(center - gw / 2, center + gw / 2, 10, hh)
-		end
-		side(true, zmin, xmin, xmax, mx0)
-		side(true, zmax, xmin, xmax, mx0)
-		side(false, xmin, zmin, zmax, mz0)
-		side(false, xmax, zmin, zmax, mz0)
-
-		-- dark room doors on every floor, like a real building
-		local dc = Color3.fromRGB(72, 54, 36)
-		for k = 1, 4 do
-			local yc = BASE.Y + k * GFH + 4.5
-			for i = 0, 3 do
-				local p = cellPos(M.x0 + 1 + i * 4, M.z0 + 1 + i * 4)
-				mk(f, "RoomDoor", Vector3.new(4, 9, 0.3), CFrame.new(p.X, yc, zmin + 0.55), dc, Enum.Material.Wood)
-				mk(f, "RoomDoor", Vector3.new(4, 9, 0.3), CFrame.new(p.X, yc, zmax - 0.55), dc, Enum.Material.Wood)
-				mk(f, "RoomDoor", Vector3.new(0.3, 9, 4), CFrame.new(xmin + 0.55, yc, p.Z), dc, Enum.Material.Wood)
-				mk(f, "RoomDoor", Vector3.new(0.3, 9, 4), CFrame.new(xmax - 0.55, yc, p.Z), dc, Enum.Material.Wood)
-			end
-		end
-
-		f.Parent = rootFolder
-		M.wxmin, M.wxmax, M.wzmin, M.wzmax = xmin, xmax, zmin, zmax
-		mega = M
-	end
-end
-
---// ================= LIGHTING (dark + creepy, per area) =================
-local applyLighting, lookStep, restoreLighting
-do
-	local LIGHT_PROPS = {"Ambient", "OutdoorAmbient", "Brightness", "ClockTime", "FogColor", "FogStart", "FogEnd",
-		"GlobalShadows", "ExposureCompensation", "EnvironmentDiffuseScale", "EnvironmentSpecularScale"}
-
-	applyLighting = function()
-		savedLighting = {props = {}, restore = {}, extras = {}}
-		for _, p in ipairs(LIGHT_PROPS) do
-			local ok, v = pcall(function() return Lighting[p] end)
-			if ok then savedLighting.props[p] = v end
-		end
-		for _, d in ipairs(Lighting:GetChildren()) do
-			if d:IsA("PostEffect") then
-				local old = d.Enabled
-				d.Enabled = false
-				savedLighting.restore[#savedLighting.restore + 1] = function() d.Enabled = old end
-			elseif d:IsA("Atmosphere") then
-				local od, oh = d.Density, d.Haze
-				d.Density, d.Haze = 0, 0
-				savedLighting.restore[#savedLighting.restore + 1] = function() d.Density, d.Haze = od, oh end
-			end
-		end
-		local function set(p, v) pcall(function() Lighting[p] = v end) end
-		set("Brightness", 0)
-		set("ClockTime", 0)
-		set("GlobalShadows", false)
-		set("EnvironmentDiffuseScale", 0)
-		set("EnvironmentSpecularScale", 0)
-
-		local cc = Instance.new("ColorCorrectionEffect")
-		cc.Name = "BR_CC"
-		cc.TintColor = LOOKS.back.tint
-		cc.Saturation = -0.12
-		cc.Contrast = 0.18
-		cc.Brightness = -0.04
-		cc.Parent = Lighting
-		local bl = Instance.new("BloomEffect")
-		bl.Name = "BR_Bloom"
-		bl.Intensity, bl.Size, bl.Threshold = 0.2, 16, 1.3
-		bl.Parent = Lighting
-		savedLighting.extras = {cc, bl}
-		savedLighting.cc = cc
-
-		local b = LOOKS.back
-		look = {amb = b.amb, fog = b.fog, tint = b.tint, fs = b.fs, fe = b.fe, ex = b.ex}
-		set("Ambient", look.amb)
-		set("OutdoorAmbient", look.amb)
-		set("FogColor", look.fog)
-		set("FogStart", look.fs)
-		set("FogEnd", look.fe)
-		set("ExposureCompensation", look.ex)
-	end
-
-	lookStep = function(dt, target)
-		if not look then return end
-		local a = math.min(1, dt * 2.5)
-		look.amb = look.amb:Lerp(target.amb, a)
-		look.fog = look.fog:Lerp(target.fog, a)
-		look.tint = look.tint:Lerp(target.tint, a)
-		look.fs = look.fs + (target.fs - look.fs) * a
-		look.fe = look.fe + (target.fe - look.fe) * a
-		look.ex = look.ex + (target.ex - look.ex) * a
-		pcall(function()
-			Lighting.Ambient = look.amb
-			Lighting.OutdoorAmbient = look.amb
-			Lighting.FogColor = look.fog
-			Lighting.FogStart = look.fs
-			Lighting.FogEnd = look.fe
-			Lighting.ExposureCompensation = look.ex
-		end)
-		if savedLighting and savedLighting.cc then savedLighting.cc.TintColor = look.tint end
-	end
-
-	restoreLighting = function()
-		look = nil
-		if not savedLighting then return end
-		for _, e in ipairs(savedLighting.extras) do pcall(function() e:Destroy() end) end
-		for p, v in pairs(savedLighting.props) do pcall(function() Lighting[p] = v end) end
-		for _, fn in ipairs(savedLighting.restore) do pcall(fn) end
-		savedLighting = nil
-	end
-end
-
-local function clearAllWater()
-	for _, c in pairs(cells) do
-		if c.water then clearWaterList(c.water) end
-	end
-	for _, s in pairs(poolSites) do clearWaterList(s.water) end
-	poolSites = {}
-	local t = getTerrain()
-	if t and savedWater then
-		for k, v in pairs(savedWater) do pcall(function() t[k] = v end) end
-	end
-	savedWater = nil
-end
-
---// ================= FLASHLIGHT ("Open Flashlight" button) =================
-local function destroyFlashlight()
-	pcall(function() RunService:UnbindFromRenderStep("BR_Flash") end)
-	if flashGui then pcall(function() flashGui:Destroy() end) flashGui = nil end
-	if flashPart then pcall(function() flashPart:Destroy() end) flashPart = nil end
-	flashLight, flashOn = nil, false
-end
-
-local function createFlashlight()
-	destroyFlashlight()
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "BR_Flashlight"
-	gui.IgnoreGuiInset = true
-	gui.ResetOnSpawn = false
-	gui.DisplayOrder = 1000000
-	parentGui(gui)
-	flashGui = gui
-
-	local btn = Instance.new("TextButton")
-	btn.AnchorPoint = Vector2.new(1, 0.5)
-	btn.Position = UDim2.new(1, -18, 0.5, 0)
-	btn.Size = UDim2.fromOffset(190, 52)
-	btn.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
-	btn.BackgroundTransparency = 0.25
-	btn.BorderSizePixel = 0
-	btn.Font = Enum.Font.Arcade
-	btn.TextSize = 20
-	btn.TextColor3 = Color3.new(1, 1, 1)
-	btn.Text = "Open Flashlight"
-	btn.AutoButtonColor = true
-	btn.Parent = gui
-	local stroke = Instance.new("UIStroke")
-	stroke.Thickness = 2
-	stroke.Color = Color3.fromRGB(215, 195, 100)
-	stroke.Parent = btn
-
-	local part = Instance.new("Part")
-	part.Name = "BR_FlashlightPart"
-	part.Anchored = true
-	part.CanCollide = false
-	part.CanQuery = false
-	part.CanTouch = false
-	part.CastShadow = false
-	part.Transparency = 1
-	part.Size = Vector3.new(0.2, 0.2, 0.2)
-	part.Parent = Workspace
-	flashPart = part
-
-	local sl = Instance.new("SpotLight")
-	sl.Face = Enum.NormalId.Front
-	sl.Range = 70
-	sl.Angle = 75
-	sl.Brightness = 3
-	sl.Shadows = false
-	sl.Color = Color3.fromRGB(255, 244, 214)
-	sl.Enabled = false
-	sl.Parent = part
-	flashLight = sl
-	flashOn = false
-
-	btn.MouseButton1Click:Connect(function()
-		flashOn = not flashOn
-		sl.Enabled = flashOn
-		btn.Text = flashOn and "Close Flashlight" or "Open Flashlight"
-		playSfx(ID.flash) -- click sound when opening and closing
-	end)
-
-	RunService:BindToRenderStep("BR_Flash", Enum.RenderPriority.Camera.Value + 2, function()
-		local cam = Workspace.CurrentCamera
-		if cam and flashPart then flashPart.CFrame = cam.CFrame end
-	end)
-end
-
---// ================= "LOADED" NOTICE =================
-local function showLoadedNotice()
-	task.spawn(function()
-		local cam = Workspace.CurrentCamera
-		local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
-		local gui = Instance.new("ScreenGui")
-		gui.Name = "BR_Notice"
-		gui.IgnoreGuiInset = true
-		gui.ResetOnSpawn = false
-		gui.DisplayOrder = 999998
-		parentGui(gui)
-		noticeGui = gui
-
-		local size = math.clamp(math.floor(vp.X / 30), 16, 34)
-		local bar = Instance.new("Frame")
-		bar.AnchorPoint = Vector2.new(0.5, 0)
-		bar.Size = UDim2.new(0.84, 0, 0, size * 2.4)
-		bar.Position = UDim2.new(0.5, 0, 0, -120)
-		bar.BackgroundColor3 = Color3.new(0, 0, 0)
-		bar.BackgroundTransparency = 0.35
-		bar.BorderSizePixel = 0
-		bar.Parent = gui
-		local stroke = Instance.new("UIStroke")
-		stroke.Thickness = 2
-		stroke.Color = Color3.fromRGB(215, 195, 100)
-		stroke.Parent = bar
-
-		local lbl = Instance.new("TextLabel")
-		lbl.BackgroundTransparency = 1
-		lbl.Size = UDim2.new(1, -20, 1, -10)
-		lbl.Position = UDim2.new(0, 10, 0, 5)
-		lbl.Font = Enum.Font.Arcade
-		lbl.Text = "Backrooms Has Been Loaded. Goodluck Wanderer"
-		lbl.TextColor3 = Color3.new(1, 1, 1)
-		lbl.TextStrokeTransparency = 0.3
-		lbl.TextScaled = true
-		lbl.Parent = bar
-		local lim = Instance.new("UITextSizeConstraint")
-		lim.MaxTextSize = size
-		lim.Parent = lbl
-
-		local tin = TweenService:Create(bar, TweenInfo.new(0.7, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, 0, 36)})
-		tin:Play()
-		tin.Completed:Wait()
-		task.wait(5)
-		if not alive then return end
-		local tout = TweenService:Create(bar, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {Position = UDim2.new(0.5, 0, 0, -120)})
-		tout:Play()
-		tout.Completed:Wait()
-		gui:Destroy()
-		noticeGui = nil
-	end)
-end
-
---// ================= VHS OVERLAY (stays on in the backrooms) =================
-local function createOverlay()
-	local cam = Workspace.CurrentCamera
-	local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
-
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "BR_Overlay"
-	gui.IgnoreGuiInset = true
-	gui.ResetOnSpawn = false
-	gui.DisplayOrder = 999999
-	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	parentGui(gui)
-
-	local WHITE, BLACK = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
-	local function F(parent, size, pos, color, tr, z)
-		local f = Instance.new("Frame")
-		f.BorderSizePixel = 0
-		f.Size, f.Position, f.BackgroundColor3 = size, pos, color
-		f.BackgroundTransparency, f.ZIndex = tr, z
-		f.Parent = parent
-		return f
-	end
-
-	local bg = F(gui, UDim2.fromScale(1, 1), UDim2.fromScale(0, 0), BLACK, 0, 1)
-
-	-- vignette (camcorder lens), only when the screen is not black
-	local vigHolder = F(gui, UDim2.fromScale(1, 1), UDim2.fromScale(0, 0), WHITE, 1, 3)
-	local function vig(size, pos, rot)
-		local v = F(vigHolder, size, pos, BLACK, 0, 3)
-		local g = Instance.new("UIGradient")
-		g.Rotation = rot
-		g.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.35), NumberSequenceKeypoint.new(1, 1)})
-		g.Parent = v
-	end
-	vig(UDim2.new(1, 0, 0.22, 0), UDim2.new(0, 0, 0, 0), 90)
-	vig(UDim2.new(1, 0, 0.22, 0), UDim2.new(0, 0, 0.78, 0), 270)
-	vig(UDim2.new(0.18, 0, 1, 0), UDim2.new(0, 0, 0, 0), 0)
-	vig(UDim2.new(0.18, 0, 1, 0), UDim2.new(0.82, 0, 0, 0), 180)
-
-	-- scanlines (slowly crawling)
-	local lineHolder = F(gui, UDim2.fromScale(1, 1), UDim2.fromScale(0, 0), WHITE, 1, 5)
-	local lines = {}
-	for i = -1, math.floor(vp.Y / 4) do
-		lines[#lines + 1] = F(lineHolder, UDim2.new(1, 0, 0, 1), UDim2.new(0, 0, 0, i * 4), WHITE, 0.93, 5)
-	end
-
-	-- tape noise
-	local noiseHolder = F(gui, UDim2.fromScale(1, 1), UDim2.fromScale(0, 0), WHITE, 1, 6)
-	local noise = {}
-	for i = 1, 30 do noise[i] = F(noiseHolder, UDim2.fromOffset(60, 1), UDim2.fromOffset(0, 0), WHITE, 0.9, 6) end
-
-	-- tracking bands
-	local function band(h, tr, z)
-		local b = F(gui, UDim2.new(1, 0, 0, h), UDim2.fromOffset(0, -100), WHITE, 0, z)
-		local g = Instance.new("UIGradient")
-		g.Rotation = 90
-		g.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, tr), NumberSequenceKeypoint.new(1, 1)})
-		g.Parent = b
-		return b
-	end
-	local band1, band2 = band(46, 0.87, 7), band(5, 0.8, 7)
-
-	-- OSD
-	local function osd(text, size, pos, anchor, align)
-		local l = Instance.new("TextLabel")
-		l.BackgroundTransparency = 1
-		l.Font = Enum.Font.Arcade
-		l.Text = text
-		l.TextSize = size
-		l.TextColor3 = WHITE
-		l.TextXAlignment = align
-		l.AnchorPoint = anchor
-		l.Position = pos
-		l.Size = UDim2.fromOffset(300, size + 6)
-		l.ZIndex = 9
-		l.Parent = gui
-		return l
-	end
-	local mode = osd("PLAY >", 26, UDim2.new(0, 36, 0, 28), Vector2.new(0, 0), Enum.TextXAlignment.Left)
-	local recDot = F(gui, UDim2.fromOffset(14, 14), UDim2.new(0, 36, 0, 36), Color3.fromRGB(235, 30, 30), 0, 9)
-	local dc = Instance.new("UICorner")
-	dc.CornerRadius = UDim.new(1, 0)
-	dc.Parent = recDot
-	osd(string.upper(os.date("%b. %d %Y")), 22, UDim2.new(0, 36, 1, -34), Vector2.new(0, 1), Enum.TextXAlignment.Left)
-	osd("SP", 22, UDim2.new(1, -36, 1, -34), Vector2.new(1, 1), Enum.TextXAlignment.Right)
-	local counter = osd("0:00:00", 22, UDim2.new(1, -36, 0, 30), Vector2.new(1, 0), Enum.TextXAlignment.Right)
-
-	-- titles (main + red/cyan ghosts)
-	local big = math.clamp(math.floor(vp.X / 9), 34, 100)
-	local small = math.clamp(math.floor(big * 0.42), 18, 42)
-	local function title(text, size, yOff)
-		local set = {y = yOff}
-		local function lbl(color, tr)
-			local l = Instance.new("TextLabel")
-			l.BackgroundTransparency = 1
-			l.Font = Enum.Font.Arcade
-			l.Text = text
-			l.TextSize = size
-			l.TextColor3 = color
-			l.TextTransparency = tr
-			l.TextStrokeTransparency = 1
-			l.AnchorPoint = Vector2.new(0.5, 0.5)
-			l.Position = UDim2.new(0.5, 0, 0.5, yOff)
-			l.Size = UDim2.new(1, 0, 0, size * 1.3)
-			l.ZIndex = 10
-			l.Visible = false
-			l.Parent = gui
-			return l
-		end
-		set.r = lbl(Color3.fromRGB(255, 40, 40), 0.55)
-		set.c = lbl(Color3.fromRGB(40, 255, 255), 0.55)
-		set.m = lbl(WHITE, 0)
-		return set
-	end
-	local tMain = title("BACKROOMS", big, 0)
-	local tSub = title("Produced By Hecker", small, math.floor(big * 0.95))
-	local extra -- the "Habitable Zone" style black screen text
-
-	local isBlack = true
-	local destroyed = false
-	local t0 = os.clock()
-	local conn
-	local acc, nextTear, tearUntil = 0, 3, 0
-
-	local function setBlack(b)
-		isBlack = b
-		bg.BackgroundTransparency = b and 0 or 1
-		for _, l in ipairs(lines) do
-			l.BackgroundColor3 = b and WHITE or BLACK
-			l.BackgroundTransparency = b and 0.93 or 0.86
-		end
-		for i, n in ipairs(noise) do n.Visible = b or i <= 12 end
-		vigHolder.Visible = not b
-		mode.Text = b and "PLAY >" or "REC"
-		recDot.Visible = not b
-	end
-	setBlack(true)
-
-	local function animTitle(t)
-		if not t.m.Visible then return end
-		local j = (math.random() < 0.04) and math.random(-8, 8) or 0
-		local g = math.random(2, 4)
-		t.m.Position = UDim2.new(0.5, j, 0.5, t.y)
-		t.r.Position = UDim2.new(0.5, j - g, 0.5, t.y)
-		t.c.Position = UDim2.new(0.5, j + g, 0.5, t.y)
-		t.m.TextTransparency = (math.random() < 0.06) and (0.15 + math.random() * 0.3) or 0
-	end
-
-	conn = RunService.RenderStepped:Connect(function(dt)
-		local t = os.clock() - t0
-		lineHolder.Position = UDim2.fromOffset(0, math.floor(t * 20) % 4)
-
-		-- tracking band 1: constant on black, a slow sweep every few seconds otherwise
-		if isBlack then
-			band1.Visible = true
-			band1.Position = UDim2.fromOffset(0, ((t * 140) % (vp.Y + 200)) - 100)
-		else
-			local cyc = t % 8
-			band1.Visible = cyc < 2
-			band1.Position = UDim2.fromOffset(0, (cyc / 2) * (vp.Y + 100) - 50)
-		end
-		-- band 2: thin glitch tear
-		if isBlack then
-			band2.Visible = true
-			band2.Position = UDim2.fromOffset((math.random() < 0.1) and math.random(-6, 6) or 0, ((t * 310 + 200) % (vp.Y + 200)) - 100)
-		else
-			if t > nextTear then
-				tearUntil = t + 0.12
-				nextTear = t + 2 + math.random() * 5
-				band2.Position = UDim2.fromOffset(math.random(-8, 8), math.random(0, math.floor(vp.Y)))
-			end
-			band2.Visible = t < tearUntil
-		end
-
-		acc += dt
-		if acc >= 1 / 18 then
-			acc = 0
-			for _, n in ipairs(noise) do
-				if n.Visible then
-					n.Position = UDim2.fromOffset(math.random(0, math.floor(vp.X)), math.random(0, math.floor(vp.Y)))
-					n.Size = UDim2.fromOffset(math.random(30, 320), math.random() < 0.2 and math.random(2, 4) or 1)
-					n.BackgroundTransparency = (isBlack and 0.72 or 0.9) + math.random() * 0.07
-				end
-			end
-			local s = math.floor(t)
-			counter.Text = string.format("%d:%02d:%02d", math.floor(s / 3600), math.floor(s / 60) % 60, s % 60)
-		end
-		recDot.BackgroundTransparency = (math.floor(t * 1.2) % 2 == 0) and 0 or 1
-		animTitle(tMain)
-		animTitle(tSub)
-		if extra then animTitle(extra) end
-	end)
-
-	local o = {}
-	local function show(t) t.m.Visible, t.r.Visible, t.c.Visible = true, true, true end
-	local function hide(t) t.m.Visible, t.r.Visible, t.c.Visible = false, false, false end
-	function o.showTitle() show(tMain) end
-	function o.showSub() show(tSub) end
-	function o.hideTitles() hide(tMain) hide(tSub) end
-	o.setBlack = setBlack
-
-	-- black screen with a pixelated text ("Habitable Zone")
-	local function clearExtra()
-		if extra then
-			for _, l in ipairs({extra.r, extra.c, extra.m}) do pcall(function() l:Destroy() end) end
-			extra = nil
-		end
-	end
-	function o.blackShow(text)
-		clearExtra()
-		setBlack(true)
-		extra = title(text, big, 0)
-		show(extra)
-	end
-	function o.blackHide()
-		clearExtra()
-		setBlack(false)
-	end
-
-	-- "The PoolRooms" / "The Backrooms" text when you change area
-	function o.areaTitle(text)
-		task.spawn(function()
-			local yOff = -math.floor(vp.Y * 0.22)
-			local set = title(text, math.clamp(math.floor(big * 0.8), 28, 80), yOff)
-			local items = {{set.r, 0.55}, {set.c, 0.55}, {set.m, 0}}
-			for _, it in ipairs(items) do
-				it[1].TextTransparency = 1
-				it[1].Visible = true
-			end
-			for _, it in ipairs(items) do
-				TweenService:Create(it[1], TweenInfo.new(0.4), {TextTransparency = it[2]}):Play()
-			end
-			local ts = os.clock()
-			while os.clock() - ts < 2.8 and not destroyed do
-				local j = (math.random() < 0.08) and math.random(-6, 6) or 0
-				local g = math.random(2, 4)
-				set.m.Position = UDim2.new(0.5, j, 0.5, yOff)
-				set.r.Position = UDim2.new(0.5, j - g, 0.5, yOff)
-				set.c.Position = UDim2.new(0.5, j + g, 0.5, yOff)
-				task.wait(0.05)
-			end
-			for _, it in ipairs(items) do
-				TweenService:Create(it[1], TweenInfo.new(0.6), {TextTransparency = 1}):Play()
-			end
-			task.wait(0.65)
-			for _, it in ipairs(items) do pcall(function() it[1]:Destroy() end) end
-		end)
-	end
-
-	function o.destroy()
-		if destroyed then return end
-		destroyed = true
-		if conn then conn:Disconnect() conn = nil end
-		gui:Destroy()
-	end
-	return o
-end
-
---// ================= FOOTSTEPS + AMBIENCE + FOUND-FOOTAGE CAMERA =================
-local startFootsteps, stopFootsteps, updateFootsteps, updateAmbience, muteDefaultSteps, restoreDefaultSteps, bindCamera, unbindCamera
-do
-	startFootsteps = function()
-		for _, s in pairs(stepSounds) do pcall(function() s:Destroy() end) end
-		stepSounds = {
-			back = makeSound(ID.walkBack, STEP_VOLUME, true),
-			pool = makeSound(ID.walkPool, STEP_VOLUME, true),
-		}
-	end
-
-	stopFootsteps = function()
-		for _, s in pairs(stepSounds) do pcall(function() s:Destroy() end) end
-		stepSounds = {}
-	end
-
-	updateFootsteps = function(hum, hrp)
-		local v = hrp.AssemblyLinearVelocity
-		local speed = Vector3.new(v.X, 0, v.Z).Magnitude
-		local walking = hum.MoveDirection.Magnitude > 0.1 and speed > 2
-			and hum.FloorMaterial ~= Enum.Material.Air
-			and hum:GetState() ~= Enum.HumanoidStateType.Swimming
-		local want = walking and (curArea == "pool" and "pool" or "back") or nil
-		for k, s in pairs(stepSounds) do
-			if k == want then
-				if not s.IsPlaying then s:Play() end
-			elseif s.IsPlaying then
-				s:Pause()
-			end
-		end
-	end
-
-	-- backrooms ambient everywhere, PoolRooms ambient only inside the PoolRooms
-	updateAmbience = function()
-		if not ambience then return end
-		if curArea == "pool" and poolAmbience then
-			if ambience.IsPlaying then ambience:Pause() end
-			if not poolAmbience.IsPlaying then poolAmbience:Play() end
-		else
-			if poolAmbience and poolAmbience.IsPlaying then poolAmbience:Pause() end
-			if not ambience.IsPlaying then ambience:Play() end
-		end
-	end
-
-	-- silence Roblox's default walking sound ("Running") while in the backrooms
-	muteDefaultSteps = function(char)
-		if not MUTE_DEFAULT_STEPS or not char then return end
-		local hrp = char:FindFirstChild("HumanoidRootPart")
-		if not hrp then return end
-		local s = hrp:FindFirstChild("Running")
-		if s and s:IsA("Sound") then
-			if mutedSounds[s] == nil then mutedSounds[s] = s.Volume end
-			s.Volume = 0
-		end
-	end
-
-	restoreDefaultSteps = function()
-		for s, v in pairs(mutedSounds) do
-			if s.Parent then pcall(function() s.Volume = v end) end
-		end
-		mutedSounds = {}
-	end
-
-	local bobT, bobAmp, idleT = 0, 0, 0
-	local function camStep(dt)
-		if not inBackrooms or not CAMERA_BOB then return end
-		local cam = Workspace.CurrentCamera
-		local _, hum, hrp = getChar()
-		if not cam or not hum then return end
-		local v = hrp.AssemblyLinearVelocity
-		local speed = Vector3.new(v.X, 0, v.Z).Magnitude
-		local moving = hum.MoveDirection.Magnitude > 0.1 and speed > 1.5
-		local target = moving and math.clamp(speed / 14, 0.4, 1.5) or 0
-		bobAmp += (target - bobAmp) * math.min(1, dt * 7)
-		bobT += dt * (5 + speed * 0.45)
-		idleT += dt
-		local x = math.sin(bobT) * 0.16 * bobAmp + math.sin(idleT * 1.3) * 0.035 + math.sin(idleT * 3.1) * 0.015
-		local y = math.abs(math.sin(bobT)) * 0.22 * bobAmp + math.cos(idleT * 1.1) * 0.03
-		local roll = math.sin(bobT) * 0.014 * bobAmp + math.sin(idleT * 0.8) * 0.006 + math.noise(idleT * 6, 3.3) * 0.004
-		cam.CFrame = cam.CFrame * CFrame.new(x, y, 0) * CFrame.Angles(0, 0, roll)
-	end
-
-	bindCamera = function()
-		pcall(function() RunService:UnbindFromRenderStep("BR_Cam") end)
-		local cam = Workspace.CurrentCamera
-		if cam then
-			origFov = cam.FieldOfView
-			cam.FieldOfView = 78
-		end
-		RunService:BindToRenderStep("BR_Cam", Enum.RenderPriority.Camera.Value + 1, camStep)
-	end
-
-	unbindCamera = function()
-		pcall(function() RunService:UnbindFromRenderStep("BR_Cam") end)
-		local cam = Workspace.CurrentCamera
-		if cam and origFov then cam.FieldOfView = origFov end
-		origFov = nil
-	end
-end
-
---// ================= ENTER / LEAVE =================
-cleanupBackrooms = function()
-	inBackrooms = false
-	flicker = {}
-	buildQueue, queueI = {}, 1
-	clearAllWater()
-	for k in pairs(cells) do cells[k] = nil end
-	if rootFolder then pcall(function() rootFolder:Destroy() end) rootFolder = nil end
-	zone, mega, poolCfg = nil, nil, nil
-	regionCache, poolRegionCache, stairCache, habRegionCache = {}, {}, {}, {}
-	curArea, LV, playerLv, levelMode, portalBusy = "back", 0, 0, "backrooms", false
-	habPhase, habTimer, habDark, habEnabled = "on", 0, false, false
-	restoreLighting()
-	restoreDefaultSteps()
-	stopFootsteps()
-	unbindCamera()
-	destroyFlashlight()
-	if overlay then pcall(overlay.destroy) overlay = nil end
-	if ambience then ambience:Destroy() ambience = nil end
-	if poolAmbience then poolAmbience:Destroy() poolAmbience = nil end
-end
-
--- the portal door: black screen with "Habitable Zone", then you spawn on Level 1
-goHabitable = function()
-	if portalBusy or busy or not inBackrooms or levelMode ~= "backrooms" then return end
-	portalBusy = true
-	task.spawn(function()
-		local ov = overlay
-		if ov then pcall(ov.blackShow, "Habitable Zone") end
-		if flashGui then flashGui.Enabled = false end
-		task.wait(1)
-		local ok, err = pcall(function()
-			-- tear the backrooms down, build Level 1 and move there (no yielding in between)
-			clearAllWater()
-			for k in pairs(cells) do cells[k] = nil end
-			if rootFolder then rootFolder:Destroy() end
-			rootFolder = Instance.new("Folder")
-			rootFolder.Name = "BR_Level1"
-			rootFolder.Parent = Workspace
-			zone, mega, poolCfg = nil, nil, nil
-			flicker = {}
-			habRegionCache = {}
-			SEED = math.random(1, 99999)
-			levelMode = "habitable"
-			curArea = "hab"
-			playerLv = 0
-			-- blackout cycle: a chance per run, then lights on 20s -> flicker -> off 20s -> repeat
-			habPhase, habTimer, habDark = "on", HAB_CYCLE, false
-			habEnabled = math.random() < CH.BLACKOUT_ENABLE
-			refillQueue(0, 0, 0)
-			processQueue(0.6)
-			local char = getChar()
-			if char then
-				char:PivotTo(CFrame.new(HAB + Vector3.new(0, 4, 0)))
-				for _, p in ipairs(char:GetDescendants()) do
-					if p:IsA("BasePart") then
-						p.AssemblyLinearVelocity = Vector3.zero
-						p.AssemblyAngularVelocity = Vector3.zero
-					end
-				end
-			end
-		end)
-		if not ok then warn("[Backrooms] " .. tostring(err)) end
-		task.wait(3)
-		if ov then pcall(ov.blackHide) end
-		if flashGui then flashGui.Enabled = true end
-		portalBusy = false
-	end)
-end
-
-local function enterBackrooms()
-	local char, hum, hrp = getChar()
-	if not char then error("no character") end
-
-	SEED = math.random(1, 99999)
-	regionCache, poolRegionCache, poolSites, stairCache, habRegionCache = {}, {}, {}, {}, {}
-	LV, playerLv, levelMode, portalBusy = 0, 0, "backrooms", false
-	habPhase, habTimer, habDark, habEnabled = "on", 0, false, false
-	rootFolder = Instance.new("Folder")
-	rootFolder.Name = "BR_" .. math.random(1000, 9999)
-	rootFolder.Parent = Workspace
-	cells, flicker = {}, {}
-	buildQueue, queueI = {}, 1
-	zone, mega, poolCfg = nil, nil, nil
-
-	pcall(collectTemplates)
-	pcall(loadChair)
-	pcall(loadDoor)
-	portalTpl = nil
-	if math.random() < CH.PORTAL_ENABLE then pcall(loadPortal) end
-
-	-- every special area gets its own side of the map so they never overlap
-	local order = {1, 2, 3, 4}
-	for i = 4, 2, -1 do
-		local j = math.random(1, i)
-		order[i], order[j] = order[j], order[i]
-	end
-	local used = 0
-	local function nextDir()
-		used += 1
-		return order[used]
-	end
-	local function try(fn)
-		local ok, err = pcall(fn, nextDir())
-		if not ok then warn("[Backrooms] " .. tostring(err)) end
-	end
-
-	-- only a 20% chance, and the PoolRooms always start far away from where you spawn
-	if math.random() < CH.POOL then
-		local dv = DIRS[nextDir()]
-		poolCfg = {axis = (dv[1] ~= 0) and 1 or 2, sign = (dv[1] ~= 0) and dv[1] or dv[2]}
-		waterOK = testWater()
-		applyWaterLook()
-	end
-	if math.random() < CH.MEGA then
-		local roll = math.random()
-		if roll < 0.25 then
-			try(function(d) buildMega(d, "mega") end)
-		elseif roll < 0.45 then
-			try(function(d) buildMega(d, "tower") end)
-		elseif roll < 0.65 then
-			try(function(d) buildMega(d, "escalator") end)
-		else
-			try(buildGrand)
-		end
-	end
-	if math.random() < CH.HOUSE then try(buildHouse) end
-
-	applyLighting()
-	refillQueue(0, 0, 0)
-	processQueue(1.5)
-
-	char:PivotTo(CFrame.new(BASE + Vector3.new(0, 4, 0)))
-	for _, p in ipairs(char:GetDescendants()) do
-		if p:IsA("BasePart") then
-			p.AssemblyLinearVelocity = Vector3.zero
-			p.AssemblyAngularVelocity = Vector3.zero
-		end
-	end
-	curArea = "back"
-	startFootsteps()
-	bindCamera()
-	inBackrooms = true
-end
-
-local function waitUntil(t0, t)
-	local r = t - (os.clock() - t0)
-	if r > 0 then task.wait(r) end
-end
-
-startSequence = function(culprit)
-	if busy or inBackrooms or not alive then return end
-	busy = true
-
-	local original
-	if culprit and culprit:IsA("BasePart") and not culprit:IsA("Terrain") then
-		original = culprit.CanCollide
-		culprit.CanCollide = false -- only this one part
-	end
-
-	task.spawn(function()
-		local t0 = os.clock()
-		pcall(function()
-			introSound = makeSound(ID.intro, 1, false)
-			introSound:Play()
-		end)
-		local ov = createOverlay()
-		overlay = ov
-
-		task.wait(0.8)
-		local ok, err = pcall(enterBackrooms)
-		if not ok then
-			warn("[Backrooms] " .. tostring(err))
-			cleanupBackrooms()
-		end
-		if culprit and original ~= nil and culprit.Parent then culprit.CanCollide = original end
-
-		waitUntil(t0, T_TITLE)
-		pcall(ov.showTitle)
-		waitUntil(t0, T_SUB)
-		pcall(ov.showSub)
-		waitUntil(t0, T_END)
-		pcall(ov.hideTitles)
-		if inBackrooms and alive then
-			pcall(ov.setBlack, false) -- black screen goes away, the VHS camcorder look stays
-			pcall(createFlashlight)   -- "Open Flashlight" button
-		else
-			pcall(ov.destroy)
-			if overlay == ov then overlay = nil end
-		end
-
-		if STOP_INTRO_ON_REVEAL and introSound then introSound:Destroy() introSound = nil end
-		if inBackrooms and alive then
-			pcall(function()
-				ambience = makeSound(ID.ambient, 0.8, true)
-				ambience:Play()
-				if poolCfg then poolAmbience = makeSound(ID.poolAmbient, 0.8, true) end
-			end)
-		end
-		busy = false
-	end)
-end
-
---// ================= NOCLIP TRIGGERS =================
-local function rayParams(char)
-	local rp = RaycastParams.new()
-	rp.FilterType = Enum.RaycastFilterType.Exclude
-	rp.FilterDescendantsInstances = {char}
-	pcall(function() rp.RespectCanCollide = true end)
-	return rp
-end
-
-local function getGround(char, hum, hrp)
-	if hum.FloorMaterial == Enum.Material.Air then return nil end
-	local res = Workspace:Raycast(hrp.Position, Vector3.new(0, -10, 0), rayParams(char))
-	return res and res.Instance or nil
-end
-
-local wallTouching, wallLastHit = false, 0
-local function checkWall(now)
-	local char, hum, hrp = getChar()
-	if not char then return end
-	local md = hum.MoveDirection
-	local flat = Vector3.new(md.X, 0, md.Z)
-	if flat.Magnitude < 0.1 then
-		if now - wallLastHit > 0.35 then wallTouching = false end
-		return
-	end
-	local v = hrp.AssemblyLinearVelocity
-	local speed = Vector3.new(v.X, 0, v.Z).Magnitude
-	local rp = rayParams(char)
-	local dir = flat.Unit * 2.4
-	local hit
-	for _, off in ipairs({0, -1.6}) do
-		local res = Workspace:Raycast(hrp.Position + Vector3.new(0, off, 0), dir, rp)
-		if res and res.Instance and not res.Instance:IsA("Terrain") and math.abs(res.Normal.Y) < 0.4 then
-			local mdl = res.Instance:FindFirstAncestorOfClass("Model")
-			if not (mdl and mdl:FindFirstChildOfClass("Humanoid")) then
-				hit = res.Instance
-				break
-			end
-		end
-	end
-	if hit and speed < math.max(hum.WalkSpeed * 0.3, 2) then
-		wallLastHit = now
-		if not wallTouching then
-			wallTouching = true
-			if math.random() < CH.WALL then startSequence(hit) end
-		end
-	elseif now - wallLastHit > 0.35 then
-		wallTouching = false
-	end
-end
-
--- 10% every second (only if standing on something)
-task.spawn(function()
-	while alive do
-		task.wait(1)
-		if alive and not busy and not inBackrooms then
-			local char, hum, hrp = getChar()
-			if char and math.random() < CH.TICK then
-				local g = getGround(char, hum, hrp)
-				if g then startSequence(g) end
-			end
-		end
-	end
+-- ============================================================
+--  PLAYER SPAWN GUARD
+-- ============================================================
+player.CharacterAdded:Connect(function(c)
+    char     = c
+    humanoid = c:WaitForChild("Humanoid")
+    rootPart = c:WaitForChild("HumanoidRootPart")
 end)
 
--- which area is the player in?
-local function detectArea(pos, cx, cz)
-	if levelMode == "habitable" then return "hab" end
-	if isPoolCell(cx, cz) and pos.Y > BASE.Y - 600 then return "pool" end
-	if mega and pos.X > mega.wxmin and pos.X < mega.wxmax and pos.Z > mega.wzmin and pos.Z < mega.wzmax then
-		return "mega"
-	end
-	return "back"
+-- ============================================================
+--  UI  (black screen, VHS overlay, pixel text, HUD)
+-- ============================================================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "BackroomsUI"
+screenGui.IgnoreGuiInset = true
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = playerGui
+
+-- VHS / Black overlay
+local overlay = Instance.new("Frame")
+overlay.Name = "VHSOverlay"
+overlay.Size = UDim2.fromScale(1, 1)
+overlay.BackgroundColor3 = Color3.new(0, 0, 0)
+overlay.BackgroundTransparency = 1
+overlay.BorderSizePixel = 0
+overlay.ZIndex = 100
+overlay.Visible = false
+overlay.Parent = screenGui
+
+-- Scanline effect
+local scan = Instance.new("Frame")
+scan.Size = UDim2.fromScale(1, 0.02)
+scan.BackgroundColor3 = Color3.new(1, 1, 1)
+scan.BackgroundTransparency = 0.85
+scan.BorderSizePixel = 0
+scan.ZIndex = 101
+scan.Parent = overlay
+
+-- Grain container
+local grainHolder = Instance.new("Frame")
+grainHolder.Size = UDim2.fromScale(1, 1)
+grainHolder.BackgroundTransparency = 1
+grainHolder.ZIndex = 101
+grainHolder.ClipsDescendants = true
+grainHolder.Parent = overlay
+
+local grainDots = {}
+for i = 1, 40 do
+    local d = Instance.new("Frame")
+    d.Size = UDim2.fromOffset(math.random(1,3), math.random(1,3))
+    d.Position = UDim2.fromScale(math.random(), math.random())
+    d.BackgroundColor3 = Color3.new(1,1,1)
+    d.BackgroundTransparency = math.random(60, 95)/100
+    d.BorderSizePixel = 0
+    d.ZIndex = 101
+    d.Parent = grainHolder
+    grainDots[#grainDots+1] = d
 end
 
--- generation / flicker / blackouts / areas / sounds / wall check
-local lastCX, lastCZ, acc = 0, 0, 0
-track(RunService.Heartbeat:Connect(function(dt)
-	if not alive then return end
-	local now = os.clock()
-	if inBackrooms and rootFolder then
-		local char, hum, hrp = getChar()
-		if hrp then
-			local origin = (levelMode == "habitable") and HAB or BASE
-			local rel = hrp.Position - origin
-			lastCX = math.floor(rel.X / CELL + 0.5)
-			lastCZ = math.floor(rel.Z / CELL + 0.5)
-			if levelMode == "backrooms" and isPoolCell(lastCX, lastCZ) then
-				playerLv = math.floor((rel.Y + 3) / PLH)
-			else
-				playerLv = 0
-			end
+-- Distortion bar
+local distort = Instance.new("Frame")
+distort.Size = UDim2.fromScale(1, 0.06)
+distort.BackgroundColor3 = Color3.new(1,1,1)
+distort.BackgroundTransparency = 0.9
+distort.BorderSizePixel = 0
+distort.ZIndex = 101
+distort.Parent = overlay
 
-			acc += dt
-			if acc >= 0.2 then
-				acc = 0
-				refillQueue(lastCX, lastCZ, playerLv)
-			end
-			processQueue(BUILD_BUDGET) -- builds a few cells every frame
+-- Pixel text label (BACKROOMS / Produced By Hecker / area names)
+local pixelText = Instance.new("TextLabel")
+pixelText.BackgroundTransparency = 1
+pixelText.Size = UDim2.fromScale(1, 0.12)
+pixelText.Position = UDim2.fromScale(0, 0.42)
+pixelText.Font = Enum.Font.Arcade
+pixelText.TextScaled = true
+pixelText.TextColor3 = Color3.new(1,1,1)
+pixelText.TextTransparency = 1
+pixelText.Text = ""
+pixelText.ZIndex = 102
+pixelText.Parent = overlay
 
-			local newArea = detectArea(hrp.Position, lastCX, lastCZ)
-			if newArea ~= curArea then
-				if newArea == "pool" and overlay then
-					overlay.areaTitle("The PoolRooms")
-				elseif curArea == "pool" and overlay then
-					overlay.areaTitle("The Backrooms")
-				end
-				curArea = newArea
-			end
-			updateHabPower(dt)
-			local target = LOOKS[curArea] or LOOKS.back
-			if levelMode == "habitable" and habDark then target = LOOKS.habDark end
-			lookStep(dt, target)
-			muteDefaultSteps(char)
-			updateAmbience()
-			if hum then updateFootsteps(hum, hrp) end
-		end
-		updateFlicker(now, lastCX, lastCZ)
-	elseif not busy and not inBackrooms then
-		checkWall(now)
-	end
-end))
+local subText = Instance.new("TextLabel")
+subText.BackgroundTransparency = 1
+subText.Size = UDim2.fromScale(1, 0.06)
+subText.Position = UDim2.fromScale(0, 0.54)
+subText.Font = Enum.Font.Arcade
+subText.TextScaled = true
+subText.TextColor3 = Color3.new(1,1,1)
+subText.TextTransparency = 1
+subText.Text = ""
+subText.ZIndex = 102
+subText.Parent = overlay
 
--- reset/respawn = leave the backrooms
-track(player.CharacterAdded:Connect(function()
-	wallTouching = false
-	if inBackrooms then cleanupBackrooms() end
-end))
+-- Toast HUD (for "Backrooms Has Been Loaded. Goodluck Wanderer", area names)
+local toast = Instance.new("TextLabel")
+toast.BackgroundTransparency = 1
+toast.Size = UDim2.fromScale(1, 0.08)
+toast.Position = UDim2.new(0, 0, 1, -80)
+toast.Font = Enum.Font.Arcade
+toast.TextScaled = true
+toast.TextColor3 = Color3.new(1,1,1)
+toast.TextStrokeTransparency = 0
+toast.TextTransparency = 1
+toast.Text = ""
+toast.ZIndex = 103
+toast.Parent = screenGui
 
-env.__BACKROOMS_STOP = function()
-	alive = false
-	for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-	if noticeGui then pcall(function() noticeGui:Destroy() end) noticeGui = nil end
-	if introSound then introSound:Destroy() introSound = nil end
-	cleanupBackrooms()
+-- ============================================================
+--  VHS EFFECT LOOP
+-- ============================================================
+local vhsActive = false
+
+task.spawn(function()
+    while true do
+        local dt = task.wait(0.05)
+        if vhsActive then
+            -- scanline moves down
+            local y = (scan.Position.Y.Scale + 0.06) % 1.2 - 0.1
+            scan.Position = UDim2.fromScale(0, y)
+            -- distortion bar
+            distort.Position = UDim2.fromScale(0, math.random()*1)
+            distort.BackgroundTransparency = math.random(85, 98)/100
+            -- grain
+            for _, d in ipairs(grainDots) do
+                if math.random() < 0.4 then
+                    d.Position = UDim2.fromScale(math.random(), math.random())
+                    d.BackgroundTransparency = math.random(60, 95)/100
+                end
+            end
+            -- subtle camera shake
+            if camera then
+                camera.CFrame = camera.CFrame * CFrame.new(
+                    rng(-0.08, 0.08),
+                    rng(-0.08, 0.08),
+                    0
+                )
+            end
+        end
+    end
+end)
+
+-- ============================================================
+--  UI HELPERS
+-- ============================================================
+local function fadeOverlay(alpha, time)
+    overlay.Visible = true
+    local t = TweenService:Create(overlay, TweenInfo.new(time), {BackgroundTransparency = alpha})
+    t:Play()
+    return t
 end
 
-showLoadedNotice()
-print("[Backrooms] loaded - walk around and don't hit walls...")
+local function showText(label, text, time, posY)
+    label.Text = text
+    if posY then label.Position = UDim2.fromScale(0, posY) end
+    TweenService:Create(label, TweenInfo.new(time), {TextTransparency = 0}):Play()
+end
+
+local function hideText(label, time)
+    TweenService:Create(label, TweenInfo.new(time), {TextTransparency = 1}):Play()
+end
+
+local function slideToast(text, duration)
+    toast.Text = text
+    toast.Position = UDim2.new(0, 0, 1, 40)
+    toast.TextTransparency = 1
+    local inT = TweenService:Create(toast, TweenInfo.new(0.6, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+        {Position = UDim2.new(0, 0, 1, -80), TextTransparency = 0})
+    inT:Play()
+    task.delay(duration or 4, function()
+        local outT = TweenService:Create(toast, TweenInfo.new(0.6, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
+            {Position = UDim2.new(0, 0, 1, 40), TextTransparency = 1})
+        outT:Play()
+    end)
+end
+
+-- ============================================================
+--  LIGHTING PRESETS
+-- ============================================================
+local function applyBackroomsLighting()
+    Lighting.Brightness = 1.2
+    Lighting.Ambient    = Color3.fromRGB(70, 65, 40)
+    Lighting.OutdoorAmbient = Color3.fromRGB(50, 45, 30)
+    Lighting.ClockTime  = 0
+    Lighting.FogColor   = Color3.fromRGB(120, 110, 70)
+    Lighting.FogStart   = 20
+    Lighting.FogEnd     = 220
+    Lighting.GlobalShadows = true
+    Lighting.EnvironmentDiffuseScale = 0.2
+    Lighting.EnvironmentSpecularScale = 0.1
+end
+
+local function applyPoolRoomsLighting()
+    Lighting.Brightness = 0.9
+    Lighting.Ambient    = Color3.fromRGB(50, 60, 70)
+    Lighting.OutdoorAmbient = Color3.fromRGB(40, 50, 60)
+    Lighting.ClockTime  = 0
+    Lighting.FogColor   = Color3.fromRGB(150, 190, 200)
+    Lighting.FogStart   = 20
+    Lighting.FogEnd     = 260
+end
+
+local function applyHabitableLighting()
+    Lighting.Brightness = 0.5
+    Lighting.Ambient    = Color3.fromRGB(35, 35, 40)
+    Lighting.OutdoorAmbient = Color3.fromRGB(25, 25, 30)
+    Lighting.ClockTime  = 0
+    Lighting.FogColor   = Color3.fromRGB(40, 40, 45)
+    Lighting.FogStart   = 10
+    Lighting.FogEnd     = 160
+end
+
+local function restoreLighting()
+    for k, v in pairs(State.originalLighting) do
+        Lighting[k] = v
+    end
+end
+
+-- ============================================================
+--  MATERIAL HELPERS
+-- ============================================================
+local function makePart(props)
+    local p = Instance.new("Part")
+    p.Anchored = true
+    p.CanCollide = true
+    p.TopSurface = Enum.SurfaceType.Smooth
+    p.BottomSurface = Enum.SurfaceType.Smooth
+    for k, v in pairs(props or {}) do
+        p[k] = v
+    end
+    return p
+end
+
+-- ============================================================
+--  BACKROOMS CELL / WALL GENERATOR
+-- ============================================================
+local backroomsFolder
+
+local function ensureFolder(name, parent)
+    local f = (parent or Workspace):FindFirstChild(name)
+    if not f then
+        f = Instance.new("Folder")
+        f.Name = name
+        f.Parent = parent or Workspace
+    end
+    return f
+end
+
+-- Wallpaper-y wall
+local function makeWallCFrame(cf)
+    local w = makePart({
+        Size = Vector3.new(1, CFG.WallHeight, CFG.CellSize),
+        CFrame = cf,
+        Material = Enum.Material.Concrete,
+        Color = Color3.fromRGB(202, 188, 130),
+        Reflectance = 0.02,
+    })
+    return w
+end
+
+-- Generate one backrooms chunk (grid of cells)
+local function generateBackroomsChunk(cx, cz)
+    local key = cx .. ":" .. cz
+    if State.generatedChunks[key] then return end
+    State.generatedChunks[key] = true
+
+    backroomsFolder = backroomsFolder or ensureFolder("Backrooms")
+
+    local originX = cx * CFG.ChunkSize
+    local originZ = cz * CFG.ChunkSize
+    local gridN   = math.floor(CFG.ChunkSize / CFG.CellSize)
+
+    local poolChunk = chance(CFG.PoolRoomsChance) and (cx ~= 0 or cz ~= 0)
+    local folderName = poolChunk and ("PoolRooms_"..key) or ("Backrooms_"..key)
+    local folder = ensureFolder(folderName, backroomsFolder)
+
+    -- Floor & ceiling
+    local floor = makePart({
+        Size = Vector3.new(CFG.ChunkSize, 1, CFG.ChunkSize),
+        CFrame = CFrame.new(originX, 0, originZ),
+        Material = poolChunk and Enum.Material.Marble or Enum.Material.Fabric,
+        Color = poolChunk and Color3.fromRGB(210, 230, 235) or Color3.fromRGB(190, 175, 120),
+    })
+    floor.Parent = folder
+
+    local ceil = makePart({
+        Size = Vector3.new(CFG.ChunkSize, 1, CFG.ChunkSize),
+        CFrame = CFrame.new(originX, CFG.WallHeight, originZ),
+        Material = Enum.Material.Plaster,
+        Color = poolChunk and Color3.fromRGB(230, 240, 245) or Color3.fromRGB(220, 210, 170),
+    })
+    ceil.Parent = folder
+
+    -- Light fixtures (square, dimmer)
+    for i = 1, 4 do
+        for j = 1, 4 do
+            if chance(poolChunk and 0.9 or 0.55) then
+                local lx = originX - CFG.ChunkSize/2 + (i-0.5)*(CFG.ChunkSize/4)
+                local lz = originZ - CFG.ChunkSize/2 + (j-0.5)*(CFG.ChunkSize/4)
+                local lightPart = makePart({
+                    Size = Vector3.new(6, 0.4, 6),
+                    CFrame = CFrame.new(lx, CFG.WallHeight - 0.3, lz),
+                    Material = Enum.Material.Neon,
+                    Color = poolChunk and Color3.fromRGB(200, 240, 255) or Color3.fromRGB(255, 245, 200),
+                    CanCollide = false,
+                })
+                lightPart.Parent = folder
+                local pl = Instance.new("PointLight")
+                pl.Range = 28
+                pl.Brightness = poolChunk and 1.2 or 0.9
+                pl.Color = lightPart.Color
+                pl.Parent = lightPart
+                table.insert(State.lights, {part = lightPart, light = pl, base = pl.Brightness})
+            end
+        end
+    end
+
+    -- Walls on grid
+    for gx = 0, gridN do
+        for gz = 0, gridN do
+            local wx = originX - CFG.ChunkSize/2 + gx * CFG.CellSize
+            local wz = originZ - CFG.ChunkSize/2 + gz * CFG.CellSize
+            -- vertical wall segments (Z axis)
+            if gx < gridN and chance(0.72) then
+                local cf = CFrame.new(wx + CFG.CellSize/2, CFG.WallHeight/2, wz) * CFrame.Angles(0, math.rad(90), 0)
+                local w = makeWallCFrame(cf)
+                w.Parent = folder
+            end
+            -- horizontal wall segments (X axis)
+            if gz < gridN and chance(0.72) then
+                local cf = CFrame.new(wx, CFG.WallHeight/2, wz + CFG.CellSize/2)
+                local w = makeWallCFrame(cf)
+                w.Parent = folder
+            end
+        end
+    end
+
+    -- Occasional door model
+    if not poolChunk and chance(0.05) then
+        local m = yieldLoad(MODEL_IDS.Door)
+        if m then
+            local primary = m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")
+            if primary then
+                m:PivotTo(CFrame.new(originX + rng(-20,20), 3, originZ + rng(-20,20)))
+                for _, d in ipairs(m:GetDescendants()) do
+                    if d:IsA("BasePart") then d.Anchored = true end
+                end
+                m.Parent = folder
+                table.insert(State.doors, m)
+            end
+        end
+    end
+
+    -- Random grouped models copied from workspace (only in backrooms chunks)
+    if not poolChunk then
+        for _, m in ipairs(Workspace:GetChildren()) do
+            if m:IsA("Model") and m ~= char and chance(0.35) then
+                local cloned = m:Clone()
+                local primary = cloned.PrimaryPart or cloned:FindFirstChildWhichIsA("BasePart")
+                if primary then
+                    local px = originX + rng(-40, 40)
+                    local pz = originZ + rng(-40, 40)
+                    local py = chance(0.3) and 0.5 or 3
+                    -- sometimes clip into floor / wall
+                    cloned:PivotTo(CFrame.new(px, py, pz) * CFrame.Angles(0, rng(0, 6.28), 0))
+                    for _, d in ipairs(cloned:GetDescendants()) do
+                        if d:IsA("BasePart") then
+                            d.Anchored = true
+                            -- occasional weird stretch
+                            if chance(0.15) then
+                                d.Size = d.Size * Vector3.new(rng(0.5,2), rng(0.5,2), rng(0.5,2))
+                            end
+                        end
+                    end
+                    cloned.Parent = folder
+                    State.pooledModels[#State.pooledModels+1] = cloned
+                else
+                    cloned:Destroy()
+                end
+            end
+        end
+
+        -- Chair model
+        if chance(0.5) then
+            local chair = yieldLoad(MODEL_IDS.Chair)
+            if chair then
+                local primary = chair.PrimaryPart or chair:FindFirstChildWhichIsA("BasePart")
+                if primary then
+                    local px = originX + rng(-40, 40)
+                    local pz = originZ + rng(-40, 40)
+                    local py = chance(0.4) and -1 or 2
+                    chair:PivotTo(CFrame.new(px, py, pz) * CFrame.Angles(0, rng(0,6.28), 0))
+                    for _, d in ipairs(chair:GetDescendants()) do
+                        if d:IsA("BasePart") then d.Anchored = true end
+                    end
+                    chair.Parent = folder
+                end
+            end
+        end
+    end
+
+    -- PoolRooms: add water pools and windows with neon
+    if poolChunk then
+        -- big pools
+        for i = 1, 3 do
+            local px = originX + rng(-CFG.ChunkSize/2 + 20, CFG.ChunkSize/2 - 20)
+            local pz = originZ + rng(-CFG.ChunkSize/2 + 20, CFG.ChunkSize/2 - 20)
+            local poolSize = Vector3.new(rng(30, 50), 6, rng(30, 50))
+            -- dig hole: build pool walls (visual)
+            local poolFloor = makePart({
+                Size = Vector3.new(poolSize.X, 1, poolSize.Z),
+                CFrame = CFrame.new(px, -poolSize.Y + 0.5, pz),
+                Material = Enum.Material.Marble,
+                Color = Color3.fromRGB(180, 220, 230),
+            })
+            poolFloor.Parent = folder
+
+            -- water surface (transparent glass-like)
+            local water = makePart({
+                Size = Vector3.new(poolSize.X - 2, 1, poolSize.Z - 2),
+                CFrame = CFrame.new(px, -0.2, pz),
+                Material = Enum.Material.Glass,
+                Color = Color3.fromRGB(120, 200, 220),
+                Transparency = 0.4,
+                CanCollide = false,
+            })
+            water.Parent = folder
+
+            -- fill terrain water for swimming
+            pcall(function()
+                local region = Region3.new(
+                    Vector3.new(px - poolSize.X/2 + 1, -poolSize.Y + 1, pz - poolSize.Z/2 + 1),
+                    Vector3.new(px + poolSize.X/2 - 1, 0, pz + poolSize.Z/2 - 1)
+                )
+                Workspace.Terrain:FillRegion(region, 4, Enum.Material.Water)
+            end)
+        end
+
+        -- windows with neon behind
+        for i = 1, 4 do
+            local wx = originX + rng(-CFG.ChunkSize/2, CFG.ChunkSize/2)
+            local wz = originZ + rng(-CFG.ChunkSize/2, CFG.ChunkSize/2)
+            local frame = makePart({
+                Size = Vector3.new(8, 6, 0.5),
+                CFrame = CFrame.new(wx, 6, wz),
+                Material = Enum.Material.Metal,
+                Color = Color3.fromRGB(200, 200, 200),
+                Transparency = 0.2,
+            })
+            frame.Parent = folder
+            local neon = makePart({
+                Size = Vector3.new(8.2, 6.2, 0.3),
+                CFrame = CFrame.new(wx, 6, wz) * CFrame.new(0, 0, 0.3),
+                Material = Enum.Material.Neon,
+                Color = Color3.fromRGB(220, 245, 255),
+                CanCollide = false,
+            })
+            neon.Parent = folder
+            local pl = Instance.new("PointLight")
+            pl.Range = 18
+            pl.Brightness = 1.5
+            pl.Color = Color3.fromRGB(200, 230, 255)
+            pl.Parent = neon
+        end
+    end
+end
+
+-- Infinite chunk loader
+local lastChunkKey = ""
+
+local function updateChunks()
+    if not State.inBackrooms then return end
+    local px, pz = rootPart.Position.X, rootPart.Position.Z
+    local cx = math.floor(px / CFG.ChunkSize)
+    local cz = math.floor(pz / CFG.ChunkSize)
+    local key = cx .. ":" .. cz
+    if key == lastChunkKey then return end
+    lastChunkKey = key
+
+    for dx = -CFG.RenderDistance, CFG.RenderDistance do
+        for dz = -CFG.RenderDistance, CFG.RenderDistance do
+            generateBackroomsChunk(cx + dx, cz + dz)
+        end
+    end
+end
+
+-- ============================================================
+--  LIGHT FLICKER / BLACKOUT LOOP
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(rng(CFG.LightFlickerEvery[1], CFG.LightFlickerEvery[2]))
+        if #State.lights > 0 and State.inBackrooms then
+            -- flicker sequence
+            local flickerCount = math.random(4, 10)
+            for i = 1, flickerCount do
+                for _, L in ipairs(State.lights) do
+                    if L.light and L.light.Parent then
+                        L.light.Brightness = chance(0.5) and 0 or L.base
+                    end
+                end
+                task.wait(rng(0.05, 0.2))
+            end
+            -- pick some to stay off
+            for _, L in ipairs(State.lights) do
+                if L.light and L.light.Parent and chance(0.15) then
+                    L.light.Brightness = 0
+                end
+            end
+            -- restore
+            task.wait(2)
+            for _, L in ipairs(State.lights) do
+                if L.light and L.light.Parent then
+                    L.light.Brightness = L.base
+                end
+            end
+
+            -- Habitable zone blackout
+            if State.inHabitable then
+                playSound(SOUNDS.Blackout, Workspace, 1)
+                for _, L in ipairs(State.lights) do
+                    if L.light and L.light.Parent then L.light.Brightness = 0 end
+                end
+                Lighting.Brightness = 0.05
+                task.wait(CFG.BlackoutDuration)
+                for _, L in ipairs(State.lights) do
+                    if L.light and L.light.Parent then L.light.Brightness = L.base end
+                end
+                Lighting.Brightness = 0.5
+            end
+        end
+    end
+end)
+
+-- ============================================================
+--  FOOTSTEP SOUNDS
+-- ============================================================
+local stepAccum = 0
+local lastStepSound = nil
+
+RunService.Heartbeat:Connect(function(dt)
+    if not State.inBackrooms then return end
+    local speed = humanoid and humanoid.MoveDirection.Magnitude or 0
+    if speed > 0.1 then
+        stepAccum = stepAccum + dt
+        if stepAccum >= 0.45 then
+            stepAccum = 0
+            local id = State.inPoolRooms and SOUNDS.PoolRoomsStep or SOUNDS.BackroomsStep
+            local s = playSound(id, rootPart, 3, false)
+            s.RollOffMaxDistance = 40
+        end
+    end
+end)
+
+-- ============================================================
+--  AMBIENT SOUND MANAGER
+-- ============================================================
+local ambientSound = nil
+
+local function setAmbient(id)
+    if ambientSound then ambientSound:Destroy() end
+    ambientSound = playSound(id, Workspace, 1.5, true)
+end
+
+-- ============================================================
+--  WALL-BUMP DETECTION (50% chance noclip)
+-- ============================================================
+local lastPos = rootPart.Position
+local bumpTimer = 0
+
+RunService.Heartbeat:Connect(function(dt)
+    if State.transitioning or State.inBackrooms then
+        lastPos = rootPart.Position
+        return
+    end
+    local moved = (rootPart.Position - lastPos).Magnitude
+    lastPos = rootPart.Position
+
+    local trying = humanoid and humanoid.MoveDirection.Magnitude > 0.1
+    -- try moving but not actually moving = bumped into something
+    if trying and moved < 0.05 then
+        bumpTimer = bumpTimer + dt
+        if bumpTimer > 0.15 then
+            bumpTimer = 0
+            if chance(CFG.NoclipChanceWall) then
+                triggerNoclip()
+            end
+        end
+    else
+        bumpTimer = 0
+    end
+end)
+
+-- ============================================================
+--  RANDOM NOCLIP TIMER
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if not State.inBackrooms and not State.transitioning then
+            if chance(CFG.NoclipChancePerSecond) then
+                triggerNoclip()
+            end
+        end
+    end
+end)
+
+-- ============================================================
+--  NOCLIP SEQUENCE
+-- ============================================================
+function triggerNoclip()
+    if State.transitioning then return end
+    State.transitioning = true
+
+    -- sound
+    playSound(SOUNDS.Noclip, Workspace, 1.2, false)
+
+    -- turn off collision under player's feet
+    task.spawn(function()
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide = false end
+        end
+        task.wait(1.5)
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide = true end
+        end
+    end)
+
+    -- black screen + VHS
+    overlay.BackgroundTransparency = 1
+    overlay.Visible = true
+    vhsActive = true
+    fadeOverlay(0, 1.2)
+
+    task.wait(1.2)
+
+    -- BACKROOMS
+    showText(pixelText, "BACKROOMS", 0.8, 0.42)
+    task.wait(3)
+
+    -- Produced By Hecker
+    showText(subText, "Produced By Hecker", 0.8, 0.56)
+    task.wait(5)
+
+    -- fade out
+    hideText(pixelText, 0.01)
+    hideText(subText, 0.01)
+    overlay.BackgroundTransparency = 1
+    -- keep VHS visible during backrooms (per request)
+    vhsActive = true
+    overlay.BackgroundTransparency = 1
+    overlay.Visible = true
+
+    -- enter backrooms
+    enterBackrooms()
+
+    State.transitioning = false
+end
+
+-- ============================================================
+--  ENTER BACKROOMS
+-- ============================================================
+function enterBackrooms()
+    State.inBackrooms = true
+    State.inPoolRooms = false
+    State.inHabitable = false
+
+    applyBackroomsLighting()
+    setAmbient(SOUNDS.BackroomsAmbient)
+
+    -- teleport player far away (to an empty area)
+    local spawnPos = Vector3.new(5000, 5, 5000)
+    rootPart.CFrame = CFrame.new(spawnPos)
+
+    -- generate first chunks
+    State.generatedChunks = {}
+    lastChunkKey = ""
+    updateChunks()
+
+    slideToast("Backrooms Has Been Loaded. Goodluck Wanderer", 5)
+end
+
+-- ============================================================
+--  POOLROOMS DETECTION (when player enters a PoolRooms chunk)
+-- ============================================================
+local lastArea = "backrooms"
+RunService.Heartbeat:Connect(function()
+    if not State.inBackrooms then return end
+    local px, pz = rootPart.Position.X, rootPart.Position.Z
+    local cx = math.floor(px / CFG.ChunkSize)
+    local cz = math.floor(pz / CFG.ChunkSize)
+    local key = ("PoolRooms_"..cx..":"..cz)
+    local isPool = backroomsFolder and backroomsFolder:FindFirstChild(key) ~= nil
+
+    if isPool and lastArea ~= "pool" then
+        lastArea = "pool"
+        State.inPoolRooms = true
+        applyPoolRoomsLighting()
+        setAmbient(SOUNDS.PoolRoomsAmbient)
+        slideToast("The PoolRooms", 4)
+    elseif not isPool and lastArea ~= "backrooms" then
+        lastArea = "backrooms"
+        State.inPoolRooms = false
+        applyBackroomsLighting()
+        setAmbient(SOUNDS.BackroomsAmbient)
+        slideToast("The Backrooms", 3)
+    end
+end)
+
+-- ============================================================
+--  FLASHLIGHT
+-- ============================================================
+local flashlight = Instance.new("SpotLight")
+flashlight.Brightness = 3
+flashlight.Range = 90
+flashlight.Angle = 60
+flashlight.Face = Enum.NormalId.Front
+flashlight.Enabled = false
+flashlight.Parent = camera
+
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.F then
+        State.flashOn = not State.flashOn
+        flashlight.Enabled = State.flashOn
+        playSound(SOUNDS.Flashlight, Workspace, 1)
+    end
+end)
+
+-- ============================================================
+--  DOOR INTERACTION (ProximityPrompt on doors)
+-- ============================================================
+local function attachDoorPrompt(model)
+    local primary = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+    if not primary then return end
+    local prompt = Instance.new("ProximityPrompt")
+    prompt.ActionText = "Open Door"
+    prompt.ObjectText = "Door"
+    prompt.MaxActivationDistance = 10
+    prompt.RequiresLineOfSight = false
+    prompt.Parent = primary
+    prompt.Triggered:Connect(function()
+        playSound(SOUNDS.DoorOpen, Workspace, 1.5)
+        -- teleport to a new location (simulate entering another part of backrooms)
+        local nx = rootPart.Position.X + rng(-200, 200)
+        local nz = rootPart.Position.Z + rng(-200, 200)
+        rootPart.CFrame = CFrame.new(nx, 5, nz)
+        State.generatedChunks = {}
+        lastChunkKey = ""
+    end)
+end
+
+-- periodically attach prompts to any new door models
+task.spawn(function()
+    while true do
+        task.wait(2)
+        for _, f in ipairs(backroomsFolder and backroomsFolder:GetChildren() or {}) do
+            for _, m in ipairs(f:GetChildren()) do
+                if m:IsA("Model") and not m:GetAttribute("PromptAttached") then
+                    local ok = pcall(attachDoorPrompt, m)
+                    if ok then m:SetAttribute("PromptAttached", true) end
+                end
+            end
+        end
+    end
+end)
+
+-- ============================================================
+--  CHUNK UPDATE LOOP
+-- ============================================================
+RunService.Heartbeat:Connect(function()
+    if State.inBackrooms then
+        updateChunks()
+    end
+end)
+
+-- ============================================================
+--  INITIAL TOAST
+-- ============================================================
+slideToast("Script Loaded. Goodluck Wanderer", 3)
