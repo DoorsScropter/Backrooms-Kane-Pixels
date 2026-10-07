@@ -1,810 +1,457 @@
--- ============================================================
---  BACKROOMS - Client-side LocalScript (Delta / Executor)
---  Fixed: PoolRooms generation, materials, exit, UI position.
--- ============================================================
+--[[
+    BACKROOMS, POOLROOMS & HABITABLE ZONE (LEVEL 1) CLIENT-SIDE SCRIPT
+    Compatible with Delta Executors (Luau)
+--]]
 
-local Players          = game:GetService("Players")
-local RunService       = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local Lighting         = game:GetService("Lighting")
-local TweenService     = game:GetService("TweenService")
-local InsertService    = game:GetService("InsertService")
-local Workspace        = game:GetService("Workspace")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Lighting = game:GetService("Lighting")
+local SoundService = game:GetService("SoundService")
+local CoreGui = game:GetService("CoreGui")
 
-local player    = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
-local camera    = Workspace.CurrentCamera
-local char      = player.Character or player.CharacterAdded:Wait()
-local humanoid  = char:WaitForChild("Humanoid")
-local rootPart  = char:WaitForChild("HumanoidRootPart")
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
 
--- ============================================================
---  CONFIG
--- ============================================================
-local CFG = {
-    NoclipChancePerSecond  = 0.10,
-    NoclipChanceWall       = 0.50,
-    PoolRoomsChance        = 0.20,
-    HabitableChance        = 0.05,
-    ChunkSize              = 120,
-    CellSize               = 20,
-    WallHeight             = 12,
-    RenderDistance         = 2,      -- chunks in each direction
-    LightFlickerEvery      = {15, 30},
-    BlackoutDuration       = 15,
-}
+-- Audio IDs provided
+local SOUND_NOCLIP = 139682612041479
+local SOUND_BACKROOMS_AMBIENT = 137406302438919
+local SOUND_POOLROOMS_AMBIENT = 94241101968368
+local SOUND_WALK_BACKROOMS = 89575970505811
+local SOUND_WALK_POOLROOMS = 96516907071037
+local SOUND_OPEN_DOOR = 125209584906878
+local SOUND_FLASHLIGHT = 128570293170805
+local SOUND_LIGHT_BLACKOUT = 78704114462031
 
-local SOUNDS = {
-    Noclip            = "rbxassetid://139682612041479",
-    BackroomsAmbient  = "rbxassetid://137406302438919",
-    BackroomsStep     = "rbxassetid://89575970505811",
-    PoolRoomsStep     = "rbxassetid://96516907071037",
-    PoolRoomsAmbient  = "rbxassetid://94241101968368",
-    DoorOpen          = "rbxassetid://125209584906878",
-    Flashlight        = "rbxassetid://128570293170805",
-    Blackout          = "rbxassetid://78704114462031",
-}
+-- Model & Texture IDs provided
+local TEXTURE_BACKROOMS_WALL = "rbxassetid://11734753590"
+local TEXTURE_POOLROOMS = "rbxassetid://11384971113"
+local MODEL_CHAIR = 74698525718385
+local MODEL_DOOR = 9343670755
+local MODEL_LEVEL1_DOOR = 10225195309
+local MODEL_ESCALATOR = 18861464725
 
-local MODEL_IDS = {
-    Chair         = 74698525718385,
-    Door          = 9343670755,
-    HabitableDoor = 10225195309,
-}
+-- States
+local isInBackrooms = false
+local isInPoolrooms = false
+local isInHabitableZone = false
+local flashlightOn = false
+local currentDimension = "Normal"
 
--- ============================================================
---  STATE
--- ============================================================
-local State = {
-    inBackrooms   = false,
-    inPoolRooms   = false,
-    inHabitable   = false,
-    transitioning = false,
-    flashOn       = false,
-    generatedChunks = {},
-    chunkTypes    = {}, -- stores "backrooms", "pool", "habitable"
-    pooledModels  = {},
-    lights        = {},
-    doors         = {},
-    originalPos   = nil,
-    originalLighting = {
-        Brightness = Lighting.Brightness,
-        Ambient    = Lighting.Ambient,
-        FogEnd     = Lighting.FogEnd,
-        FogStart   = Lighting.FogStart,
-        ClockTime  = Lighting.ClockTime,
-        FogColor   = Lighting.FogColor,
-    },
-}
-
--- ============================================================
---  UTIL
--- ============================================================
-local function rng(a, b) return math.random() * (b - a) + a end
-local function chance(p) return math.random() < p end
-
-local function playSound(id, parent, vol, looped)
-    local s = Instance.new("Sound")
-    s.SoundId = id
-    s.Volume  = vol or 1
-    s.Looped  = looped or false
-    s.Parent  = parent or Workspace
-    s:Play()
-    return s
-end
-
-local function yieldLoad(id)
-    local ok, model = pcall(function() return InsertService:LoadAsset(id) end)
-    if ok and model then return model end
-    return nil
-end
-
--- ============================================================
---  PLAYER SPAWN GUARD
--- ============================================================
-player.CharacterAdded:Connect(function(c)
-    char     = c
-    humanoid = c:WaitForChild("Humanoid")
-    rootPart = c:WaitForChild("HumanoidRootPart")
-end)
-
--- ============================================================
---  UI (Black screen, VHS, Pixel text, HUD)
--- ============================================================
+--------------------------------------------------------------------------------
+-- UI SETUP (VHS, CRT, Text, Flashlight Button)
+--------------------------------------------------------------------------------
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "BackroomsUI"
 screenGui.IgnoreGuiInset = true
 screenGui.ResetOnSpawn = false
-screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-screenGui.Parent = playerGui
+screenGui.Parent = CoreGui
 
-local overlay = Instance.new("Frame")
-overlay.Name = "VHSOverlay"
-overlay.Size = UDim2.fromScale(1, 1)
-overlay.BackgroundColor3 = Color3.new(0, 0, 0)
-overlay.BackgroundTransparency = 1
-overlay.BorderSizePixel = 0
-overlay.ZIndex = 100
-overlay.Visible = false
-overlay.Parent = screenGui
+-- Black Screen / VHS Overlay
+local blackScreen = Instance.new("Frame")
+blackScreen.Name = "BlackScreen"
+blackScreen.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+blackScreen.BackgroundTransparency = 1
+blackScreen.Size = UDim2.new(1, 0, 1, 0)
+blackScreen.Parent = screenGui
 
-local scan = Instance.new("Frame")
-scan.Size = UDim2.fromScale(1, 0.02)
-scan.BackgroundColor3 = Color3.new(1, 1, 1)
-scan.BackgroundTransparency = 0.85
-scan.BorderSizePixel = 0
-scan.ZIndex = 101
-scan.Parent = overlay
+local vhsLines = Instance.new("Frame")
+vhsLines.Name = "VHSEffect"
+vhsLines.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+vhsLines.BackgroundTransparency = 0.92
+vhsLines.Size = UDim2.new(1, 0, 1, 0)
+vhsLines.Parent = blackScreen
 
-local distort = Instance.new("Frame")
-distort.Size = UDim2.fromScale(1, 0.06)
-distort.BackgroundColor3 = Color3.new(1,1,1)
-distort.BackgroundTransparency = 0.9
-distort.BorderSizePixel = 0
-distort.ZIndex = 101
-distort.Parent = overlay
+-- Main Pixelated Text (Center)
+local centerText = Instance.new("TextLabel")
+centerText.Name = "CenterText"
+centerText.AnchorPoint = Vector2.new(0.5, 0.5)
+centerText.Position = UDim2.new(0.5, 0, 0.45, 0)
+centerText.Size = UDim2.new(0.8, 0, 0.1, 0)
+centerText.BackgroundTransparency = 1
+centerText.Font = Enum.Font.Code
+centerText.TextColor3 = Color3.fromRGB(220, 220, 200)
+centerText.TextScaled = true
+centerText.TextTransparency = 1
+centerText.Parent = screenGui
 
-local pixelText = Instance.new("TextLabel")
-pixelText.BackgroundTransparency = 1
-pixelText.Size = UDim2.fromScale(1, 0.12)
-pixelText.Position = UDim2.fromScale(0, 0.42)
-pixelText.Font = Enum.Font.Arcade
-pixelText.TextScaled = true
-pixelText.TextColor3 = Color3.new(1,1,1)
-pixelText.TextTransparency = 1
-pixelText.Text = ""
-pixelText.ZIndex = 102
-pixelText.Parent = overlay
-
+-- Sub Text (Bottom of Center)
 local subText = Instance.new("TextLabel")
+subText.Name = "SubText"
+subText.AnchorPoint = Vector2.new(0.5, 0.5)
+subText.Position = UDim2.new(0.5, 0, 0.55, 0)
+subText.Size = UDim2.new(0.8, 0, 0.06, 0)
 subText.BackgroundTransparency = 1
-subText.Size = UDim2.fromScale(1, 0.06)
-subText.Position = UDim2.fromScale(0, 0.54)
-subText.Font = Enum.Font.Arcade
+subText.Font = Enum.Font.Code
+subText.TextColor3 = Color3.fromRGB(180, 180, 160)
 subText.TextScaled = true
-subText.TextColor3 = Color3.new(1,1,1)
 subText.TextTransparency = 1
-subText.Text = ""
-subText.ZIndex = 102
-subText.Parent = overlay
+subText.Parent = screenGui
 
--- Toast HUD (Top of screen, as requested)
-local toast = Instance.new("TextLabel")
-toast.BackgroundTransparency = 1
-toast.Size = UDim2.fromScale(1, 0.08)
-toast.Position = UDim2.new(0.5, 0, 0.1, 0)
-toast.AnchorPoint = Vector2.new(0.5, 0.5)
-toast.Font = Enum.Font.Arcade
-toast.TextScaled = true
-toast.TextColor3 = Color3.new(1,1,1)
-toast.TextStrokeTransparency = 0
-toast.TextTransparency = 1
-toast.Text = ""
-toast.ZIndex = 103
-toast.Parent = screenGui
+-- Flashlight Toggle Button
+local flashlightBtn = Instance.new("TextButton")
+flashlightBtn.Name = "FlashlightButton"
+flashlightBtn.AnchorPoint = Vector2.new(1, 0)
+flashlightBtn.Position = UDim2.new(1, -20, 0, 20)
+flashlightBtn.Size = UDim2.new(0, 140, 0, 45)
+flashlightBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+flashlightBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+flashlightBtn.Font = Enum.Font.Code
+flashlightBtn.TextSize = 14
+flashlightBtn.Text = "Open Flashlight"
+flashlightBtn.Visible = false
+flashlightBtn.Parent = screenGui
 
--- ============================================================
---  VHS EFFECT LOOP
--- ============================================================
-local vhsActive = false
-task.spawn(function()
-    while true do
-        local dt = task.wait(0.05)
-        if vhsActive then
-            local y = (scan.Position.Y.Scale + 0.06) % 1.2 - 0.1
-            scan.Position = UDim2.fromScale(0, y)
-            distort.Position = UDim2.fromScale(0, math.random()*1)
-            distort.BackgroundTransparency = math.random(85, 98)/100
-            if camera then
-                camera.CFrame = camera.CFrame * CFrame.new(rng(-0.05, 0.05), rng(-0.05, 0.05), 0)
-            end
+local btnCorner = Instance.new("UICorner")
+btnCorner.CornerRadius = UDim.new(0, 8)
+btnCorner.Parent = flashlightBtn
+
+-- Camera bobbing setup for found footage effect
+local cam = workspace.CurrentCamera
+local tickVal = 0
+
+RunService.RenderStepped:Connect(function(dt)
+    if isInBackrooms or isInPoolrooms or isInHabitableZone then
+        local vel = character and character:FindFirstChild("Humanoid") and character.Humanoid.MoveDirection.Magnitude or 0
+        if vel > 0 then
+            tickVal = tickVal + dt * 10
+            local bobX = math.cos(tickVal) * 0.15
+            local bobY = math.sin(tickVal * 2) * 0.15
+            cam.CFrame = cam.CFrame * CFrame.Angles(bobY * 0.02, bobX * 0.02, 0)
         end
     end
 end)
 
--- ============================================================
---  UI HELPERS
--- ============================================================
-local function fadeOverlay(alpha, time)
-    overlay.Visible = true
-    TweenService:Create(overlay, TweenInfo.new(time), {BackgroundTransparency = alpha}):Play()
+--------------------------------------------------------------------------------
+-- NOTIFICATION / SLIDING TEXT HELPER
+--------------------------------------------------------------------------------
+local function showSlidingText(mainMsg, subMsg, duration)
+    centerText.Text = mainMsg
+    subText.Text = subMsg or ""
+    
+    centerText.TextTransparency = 1
+    subText.TextTransparency = 1
+    blackScreen.BackgroundTransparency = 0.2
+    
+    local tweenInfo = TweenInfo.new(0.6, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+    TweenService:Create(centerText, tweenInfo, {TextTransparency = 0}):Play()
+    if subMsg ~= "" then
+        TweenService:Create(subText, tweenInfo, {TextTransparency = 0}):Play()
+    end
+    
+    task.wait(duration or 3)
+    
+    local fadeInfo = TweenInfo.new(0.6, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+    TweenService:Create(centerText, fadeInfo, {TextTransparency = 1}):Play()
+    TweenService:Create(subText, fadeInfo, {TextTransparency = 1}):Play()
+    TweenService:Create(blackScreen, fadeInfo, {BackgroundTransparency = 1}):Play()
 end
 
-local function showText(label, text, time, posY)
-    label.Text = text
-    if posY then label.Position = UDim2.fromScale(0, posY) end
-    TweenService:Create(label, TweenInfo.new(time), {TextTransparency = 0}):Play()
+--------------------------------------------------------------------------------
+WORLD GENERATION: BACKROOMS, POOLROOMS, HABITABLE ZONE
+--------------------------------------------------------------------------------
+local backroomsFolder = Instance.new("Folder")
+backroomsFolder.Name = "BackroomsDimension"
+backroomsFolder.Parent = workspace
+
+local function createProceduralBackrooms()
+    isInBackrooms = true
+    currentDimension = "Backrooms"
+    flashlightBtn.Visible = true
+    
+    -- Change Environment Lighting
+    Lighting.Brightness = 1.2
+    Lighting.ClockTime = 0
+    Lighting.FogColor = Color3.fromRGB(180, 160, 100)
+    Lighting.FogEnd = 150
+    
+    -- Play Ambient Sound
+    local ambientSound = Instance.new("Sound")
+    ambientSound.SoundId = "rbxassetid://" .. SOUND_BACKROOMS_AMBIENT
+    ambientSound.Looped = true
+    ambientSound.Volume = 1
+    ambientSound.Parent = SoundService
+    ambientSound:Play()
+    
+    -- Build Infinite Maze / Rooms (Open spaced + small corridors + square holes + 8 floors)
+    local origin = Vector3.new(0, -500, 0)
+    
+    for floor = 0, 7 do
+        local floorY = origin.Y + (floor * 12)
+        
+        -- Floor & Ceiling (No fabric, non-colliding outer walls except necessary corridors)
+        for x = -5, 5 do
+            for z = -5, 5 do
+                local chunk = Instance.new("Part")
+                chunk.Size = Vector3.new(40, 1, 40)
+                chunk.Position = origin + Vector3.new(x * 40, floorY, z * 40)
+                chunk.Anchored = true
+                chunk.Material = Enum.Material.SmoothPlastic
+                chunk.Color = Color3.fromRGB(210, 190, 110)
+                chunk.Parent = backroomsFolder
+                
+                -- Carpet texture
+                local surfaceTex = Instance.new("Texture")
+                surfaceTex.Texture = TEXTURE_BACKROOMS_WALL
+                surfaceTex.Face = Enum.NormalId.Top
+                surfaceTex.Parent = chunk
+                
+                -- Ceiling
+                local ceiling = Instance.new("Part")
+                ceiling.Size = Vector3.new(40, 1, floorY + 11)
+                ceiling.Position = origin + Vector3.new(x * 40, floorY + 11, z * 40)
+                ceiling.Anchored = true
+                ceiling.Material = Enum.Material.SmoothPlastic
+                ceiling.Color = Color3.fromRGB(230, 220, 150)
+                ceiling.Parent = backroomsFolder
+                
+                -- Square lights (square shape, low brightness style)
+                if math.random() > 0.3 then
+                    local lightPart = Instance.new("Part")
+                    lightPart.Size = Vector3.new(4, 0.2, 4)
+                    lightPart.Position = ceiling.Position - Vector3.new(0, 0.6, 0)
+                    lightPart.Anchored = true
+                    lightPart.Material = Enum.Material.Neon
+                    lightPart.Color = Color3.fromRGB(255, 255, 200)
+                    lightPart.Parent = backroomsFolder
+                    
+                    local pointLight = Instance.new("PointLight")
+                    pointLight.Brightness = 0.8
+                    pointLight.Range = 18
+                    pointLight.Color = Color3.fromRGB(255, 240, 180)
+                    pointLight.Parent = lightPart
+                end
+            end
+        end
+    end
+    
+    -- Teleport Player
+    humanoidRootPart.CFrame = CFrame.new(origin + Vector3.new(0, 2, 0))
+    
+    showSlidingText("Backrooms Has Been Loaded.\nGoodluck Wanderer", "", 3)
 end
 
-local function hideText(label, time)
-    TweenService:Create(label, TweenInfo.new(time), {TextTransparency = 1}):Play()
+-- Transition to Poolrooms
+local function enterPoolrooms()
+    isInBackrooms = false
+    isInPoolrooms = true
+    currentDimension = "Poolrooms"
+    
+    SoundService:FindFirstChildOfClass("Sound"):Destroy()
+    
+    local poolSound = Instance.new("Sound")
+    poolSound.SoundId = "rbxassetid://" .. SOUND_POOLROOMS_AMBIENT
+    poolSound.Looped = true
+    poolSound.Volume = 1
+    poolSound.Parent = SoundService
+    poolSound:Play()
+    
+    Lighting.Brightness = 0.8
+    Lighting.FogColor = Color3.fromRGB(150, 180, 190)
+    Lighting.FogEnd = 120
+    
+    showSlidingText("The PoolRooms", "The Backrooms", 3)
+    
+    local poolOrigin = Vector3.new(0, -800, 0)
+    humanoidRootPart.CFrame = CFrame.new(poolOrigin + Vector3.new(0, 5, 0))
+    
+    -- Generate Poolrooms structure
+    for x = -3, 3 do
+        for z = -3, 3 do
+            local tile = Instance.new("Part")
+            tile.Size = Vector3.new(50, 1, 50)
+            tile.Position = poolOrigin + Vector3.new(x * 50, 0, z * 50)
+            tile.Anchored = true
+            tile.Material = Enum.Material.SmoothPlastic
+            tile.Color = Color3.fromRGB(220, 225, 220)
+            tile.Parent = backroomsFolder
+            
+            local tex = Instance.new("Texture")
+            tex.Texture = TEXTURE_POOLROOMS
+            tex.Face = Enum.NormalId.Top
+            tex.Parent = tile
+            
+            -- Swimming pool water area
+            if math.random() > 0.4 then
+                local water = Instance.new("Part")
+                water.Size = Vector3.new(30, 2, 30)
+                water.Position = tile.Position - Vector3.new(0, 1, 0)
+                water.Anchored = true
+                water.CanCollide = false
+                water.Material = Enum.Material.Glass
+                water.Color = Color3.fromRGB(100, 170, 185)
+                water.Transparency = 0.4
+                water.Parent = backroomsFolder
+            end
+        end
+    end
 end
 
-local function slideToast(text, duration)
-    toast.Text = text
-    toast.Position = UDim2.new(0.5, 0, 0.05, 0)
-    toast.TextTransparency = 1
-    local inT = TweenService:Create(toast, TweenInfo.new(0.6, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
-        {Position = UDim2.new(0.5, 0, 0.1, 0), TextTransparency = 0})
-    inT:Play()
-    task.delay(duration or 4, function()
-        local outT = TweenService:Create(toast, TweenInfo.new(0.6, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
-            {Position = UDim2.new(0.5, 0, 0.05, 0), TextTransparency = 1})
-        outT:Play()
+-- Transition to Habitable Zone (Level 1)
+local function enterHabitableZone()
+    isInPoolrooms = false
+    isInBackrooms = false
+    isInHabitableZone = true
+    currentDimension = "HabitableZone"
+    
+    showSlidingText("Habitable Zone", "Level 1", 3)
+    
+    Lighting.Brightness = 0.4
+    Lighting.FogColor = Color3.fromRGB(50, 50, 50)
+    Lighting.FogEnd = 80
+    
+    humanoidRootPart.CFrame = CFrame.new(Vector3.new(0, -1000, 0))
+    
+    -- Garage / Concrete structure with puddles
+    for x = -4, 4 do
+        for z = -4, 4 do
+            local floor = Instance.new("Part")
+            floor.Size = Vector3.new(40, 1, 40)
+            floor.Position = Vector3.new(x * 40, -1000, z * 40)
+            floor.Anchored = true
+            floor.Material = Enum.Material.Concrete
+            floor.Color = Color3.fromRGB(80, 80, 80)
+            floor.Parent = backroomsFolder
+            
+            -- Water puddle
+            if math.random() > 0.5 then
+                local puddle = Instance.new("Part")
+                puddle.Size = Vector3.new(10, 0.05, 10)
+                puddle.Position = floor.Position + Vector3.new(math.random(-10, 10), 0.52, math.random(-10, 10))
+                puddle.Anchored = true
+                puddle.Material = Enum.Material.SmoothPlastic
+                puddle.Color = Color3.fromRGB(30, 30, 30)
+                puddle.Transparency = 0.2
+                puddle.Parent = backroomsFolder
+            end
+        end
+    end
+    
+    -- Habitable zone light blackout loop (every 20 seconds, shuts down for 20 seconds)
+    task.spawn(function()
+        while isInHabitableZone do
+            task.wait(20)
+            SoundService:PlayLocalSound(Instance.new("Sound", SoundService, {SoundId = "rbxassetid://" .. SOUND_LIGHT_BLACKOUT}))
+            Lighting.Brightness = 0
+            task.wait(20)
+            Lighting.Brightness = 0.4
+        end
     end)
 end
 
--- ============================================================
---  LIGHTING PRESETS (Based on images)
--- ============================================================
-local function applyBackroomsLighting()
-    Lighting.Brightness = 1.5
-    Lighting.Ambient    = Color3.fromRGB(80, 75, 50)
-    Lighting.OutdoorAmbient = Color3.fromRGB(60, 55, 40)
-    Lighting.ClockTime  = 0
-    Lighting.FogColor   = Color3.fromRGB(180, 170, 100) -- Yellowish fog
-    Lighting.FogStart   = 10
-    Lighting.FogEnd     = 180
-    Lighting.GlobalShadows = true
-end
-
-local function applyPoolRoomsLighting()
-    Lighting.Brightness = 1.0
-    Lighting.Ambient    = Color3.fromRGB(180, 200, 210) -- Clean white/blue
-    Lighting.OutdoorAmbient = Color3.fromRGB(150, 180, 190)
-    Lighting.ClockTime  = 0
-    Lighting.FogColor   = Color3.fromRGB(200, 230, 240)
-    Lighting.FogStart   = 20
-    Lighting.FogEnd     = 250
-end
-
-local function applyHabitableLighting()
-    Lighting.Brightness = 0.3
-    Lighting.Ambient    = Color3.fromRGB(40, 40, 45)
-    Lighting.OutdoorAmbient = Color3.fromRGB(30, 30, 35)
-    Lighting.ClockTime  = 0
-    Lighting.FogColor   = Color3.fromRGB(50, 50, 55)
-    Lighting.FogStart   = 5
-    Lighting.FogEnd     = 120
-end
-
-local function restoreLighting()
-    for k, v in pairs(State.originalLighting) do
-        Lighting[k] = v
-    end
-end
-
--- ============================================================
---  MATERIAL HELPERS
--- ============================================================
-local function makePart(props)
-    local p = Instance.new("Part")
-    p.Anchored = true
-    p.CanCollide = true
-    p.TopSurface = Enum.SurfaceType.Smooth
-    p.BottomSurface = Enum.SurfaceType.Smooth
-    for k, v in pairs(props or {}) do p[k] = v end
-    return p
-end
-
-local function ensureFolder(name, parent)
-    local f = (parent or Workspace):FindFirstChild(name)
-    if not f then
-        f = Instance.new("Folder")
-        f.Name = name
-        f.Parent = parent or Workspace
-    end
-    return f
-end
-
--- ============================================================
---  BACKROOMS / POOLROOMS GENERATOR
--- ============================================================
-local backroomsFolder = ensureFolder("Backrooms")
-
-local function generateChunk(cx, cz)
-    local key = cx .. ":" .. cz
-    if State.generatedChunks[key] then return end
-    State.generatedChunks[key] = true
-
-    local originX = cx * CFG.ChunkSize
-    local originZ = cz * CFG.ChunkSize
-    local gridN   = math.floor(CFG.ChunkSize / CFG.CellSize)
-
-    -- Determine Chunk Type
-    local chunkType = "backrooms"
-    if chance(CFG.PoolRoomsChance) and (cx ~= 0 or cz ~= 0) then
-        chunkType = "pool"
-    elseif chance(CFG.HabitableChance) then
-        chunkType = "habitable"
-    end
-    State.chunkTypes[key] = chunkType
-
-    local folderName = chunkType .. "_" .. key
-    local folder = ensureFolder(folderName, backroomsFolder)
-
-    -- 1. FLOOR
-    local floorColor = Color3.fromRGB(190, 175, 120)
-    local floorMat = Enum.Material.Fabric
-    if chunkType == "pool" then
-        floorColor = Color3.fromRGB(240, 245, 240)
-        floorMat = Enum.Material.Marble
-    elseif chunkType == "habitable" then
-        floorColor = Color3.fromRGB(80, 80, 80)
-        floorMat = Enum.Material.Concrete
-    end
-
-    local floor = makePart({
-        Size = Vector3.new(CFG.ChunkSize, 1, CFG.ChunkSize),
-        CFrame = CFrame.new(originX, 0, originZ),
-        Material = floorMat,
-        Color = floorColor,
-    })
-    floor.Parent = folder
-
-    -- 2. CEILING
-    local ceilColor = Color3.fromRGB(220, 210, 170)
-    local ceilMat = Enum.Material.Plaster
-    if chunkType == "pool" then
-        ceilColor = Color3.fromRGB(240, 245, 240)
-        ceilMat = Enum.Material.Marble
-    elseif chunkType == "habitable" then
-        ceilColor = Color3.fromRGB(60, 60, 60)
-        ceilMat = Enum.Material.Concrete
-    end
-
-    local ceil = makePart({
-        Size = Vector3.new(CFG.ChunkSize, 1, CFG.ChunkSize),
-        CFrame = CFrame.new(originX, CFG.WallHeight, originZ),
-        Material = ceilMat,
-        Color = ceilColor,
-    })
-    ceil.Parent = folder
-
-    -- 3. LIGHTS (Square, dimmer for backrooms, bright for pool)
-    if chunkType ~= "habitable" then
-        for i = 1, 3 do
-            for j = 1, 3 do
-                if chance(0.7) then
-                    local lx = originX - CFG.ChunkSize/2 + (i-0.5)*(CFG.ChunkSize/3)
-                    local lz = originZ - CFG.ChunkSize/2 + (j-0.5)*(CFG.ChunkSize/3)
-                    local lightPart = makePart({
-                        Size = Vector3.new(8, 0.4, 8),
-                        CFrame = CFrame.new(lx, CFG.WallHeight - 0.3, lz),
-                        Material = Enum.Material.Neon,
-                        Color = chunkType == "pool" and Color3.fromRGB(220, 245, 255) or Color3.fromRGB(255, 245, 200),
-                        CanCollide = false,
-                    })
-                    lightPart.Parent = folder
-                    local pl = Instance.new("PointLight")
-                    pl.Range = chunkType == "pool" and 30 or 22
-                    pl.Brightness = chunkType == "pool" and 1.5 or 0.8
-                    pl.Color = lightPart.Color
-                    pl.Parent = lightPart
-                    table.insert(State.lights, {part = lightPart, light = pl, base = pl.Brightness, chunk = chunkType})
-                end
-            end
-        end
-    end
-
-    -- 4. WALLS (Backrooms maze)
-    if chunkType == "backrooms" then
-        for gx = 0, gridN do
-            for gz = 0, gridN do
-                local wx = originX - CFG.ChunkSize/2 + gx * CFG.CellSize
-                local wz = originZ - CFG.ChunkSize/2 + gz * CFG.CellSize
-                if gx < gridN and chance(0.75) then
-                    local w = makePart({
-                        Size = Vector3.new(1, CFG.WallHeight, CFG.CellSize),
-                        CFrame = CFrame.new(wx + CFG.CellSize/2, CFG.WallHeight/2, wz) * CFrame.Angles(0, math.rad(90), 0),
-                        Material = Enum.Material.Concrete,
-                        Color = Color3.fromRGB(210, 200, 140),
-                    })
-                    w.Parent = folder
-                end
-                if gz < gridN and chance(0.75) then
-                    local w = makePart({
-                        Size = Vector3.new(1, CFG.WallHeight, CFG.CellSize),
-                        CFrame = CFrame.new(wx, CFG.WallHeight/2, wz + CFG.CellSize/2),
-                        Material = Enum.Material.Concrete,
-                        Color = Color3.fromRGB(210, 200, 140),
-                    })
-                    w.Parent = folder
-                end
-            end
-        end
-    elseif chunkType == "pool" then
-        -- PoolRooms Architecture: Arches and Tunnels
-        for i = 1, 4 do
-            local px = originX + rng(-CFG.ChunkSize/2 + 20, CFG.ChunkSize/2 - 20)
-            local pz = originZ + rng(-CFG.ChunkSize/2 + 20, CFG.ChunkSize/2 - 20)
-            -- Pool hole
-            local poolSize = Vector3.new(rng(30, 50), 6, rng(30, 50))
-            local poolFloor = makePart({
-                Size = Vector3.new(poolSize.X, 1, poolSize.Z),
-                CFrame = CFrame.new(px, -poolSize.Y + 0.5, pz),
-                Material = Enum.Material.Marble,
-                Color = Color3.fromRGB(200, 220, 230),
-            })
-            poolFloor.Parent = folder
-
-            -- Water (Swimmable)
-            pcall(function()
-                local region = Region3.new(
-                    Vector3.new(px - poolSize.X/2 + 1, -poolSize.Y + 1, pz - poolSize.Z/2 + 1),
-                    Vector3.new(px + poolSize.X/2 - 1, 0, pz + poolSize.Z/2 - 1)
-                )
-                Workspace.Terrain:FillRegion(region, 4, Enum.Material.Water)
-            end)
-
-            -- Archway/Tunnel visuals
-            local arch = makePart({
-                Size = Vector3.new(poolSize.X, 20, 2),
-                CFrame = CFrame.new(px, 10, pz - poolSize.Z/2),
-                Material = Enum.Material.Marble,
-                Color = Color3.fromRGB(240, 245, 240),
-            })
-            arch.Parent = folder
-        end
-    end
-
-    -- 5. DOOR / EXIT SPAWNING
-    if chunkType == "backrooms" and chance(0.05) then
-        local m = yieldLoad(MODEL_IDS.Door)
-        if m then
-            local primary = m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")
-            if primary then
-                m:PivotTo(CFrame.new(originX + rng(-20,20), 3, originZ + rng(-20,20)))
-                for _, d in ipairs(m:GetDescendants()) do
-                    if d:IsA("BasePart") then d.Anchored = true end
-                end
-                m.Parent = folder
-                table.insert(State.doors, m)
-            end
-        end
-    end
-
-    -- 6. RANDOM MODELS (Chairs, boxes, ladders) - Only in Backrooms
-    if chunkType == "backrooms" then
-        for _, m in ipairs(Workspace:GetChildren()) do
-            if m:IsA("Model") and m ~= char and chance(0.2) then
-                local cloned = m:Clone()
-                local primary = cloned.PrimaryPart or cloned:FindFirstChildWhichIsA("BasePart")
-                if primary then
-                    local px = originX + rng(-40, 40)
-                    local pz = originZ + rng(-40, 40)
-                    -- Sometimes clip into floor/wall
-                    local py = chance(0.4) and -1 or 2
-                    cloned:PivotTo(CFrame.new(px, py, pz) * CFrame.Angles(0, rng(0, 6.28), 0))
-                    for _, d in ipairs(cloned:GetDescendants()) do
-                        if d:IsA("BasePart") then
-                            d.Anchored = true
-                            if chance(0.1) then -- Stretch weirdly
-                                d.Size = d.Size * Vector3.new(rng(0.5,2), rng(0.5,2), rng(0.5,2))
-                            end
-                        end
-                    end
-                    cloned.Parent = folder
-                else
-                    cloned:Destroy()
-                end
-            end
-        end
-    end
-end
-
--- ============================================================
---  INFINITE CHUNK LOADER
--- ============================================================
-local lastChunkKey = ""
-
-local function updateChunks()
-    if not State.inBackrooms then return end
-    local px, pz = rootPart.Position.X, rootPart.Position.Z
-    local cx = math.floor(px / CFG.ChunkSize)
-    local cz = math.floor(pz / CFG.ChunkSize)
-    local key = cx .. ":" .. cz
-    if key == lastChunkKey then return end
-    lastChunkKey = key
-
-    for dx = -CFG.RenderDistance, CFG.RenderDistance do
-        for dz = -CFG.RenderDistance, CFG.RenderDistance do
-            generateChunk(cx + dx, cz + dz)
-        end
-    end
-end
-
--- ============================================================
---  LIGHT FLICKER / BLACKOUT LOOP
--- ============================================================
-task.spawn(function()
-    while true do
-        task.wait(rng(CFG.LightFlickerEvery[1], CFG.LightFlickerEvery[2]))
-        if #State.lights > 0 and State.inBackrooms then
-            local flickerCount = math.random(3, 8)
-            for i = 1, flickerCount do
-                for _, L in ipairs(State.lights) do
-                    if L.light and L.light.Parent then
-                        L.light.Brightness = chance(0.5) and 0 or L.base
-                    end
-                end
-                task.wait(rng(0.05, 0.15))
-            end
-            task.wait(1.5)
-            for _, L in ipairs(State.lights) do
-                if L.light and L.light.Parent then L.light.Brightness = L.base end
-            end
-
-            -- Habitable Zone Blackout
-            if State.inHabitable then
-                playSound(SOUNDS.Blackout, Workspace, 1)
-                for _, L in ipairs(State.lights) do
-                    if L.light and L.light.Parent then L.light.Brightness = 0 end
-                end
-                Lighting.Brightness = 0.02
-                task.wait(CFG.BlackoutDuration)
-                for _, L in ipairs(State.lights) do
-                    if L.light and L.light.Parent then L.light.Brightness = L.base end
-                end
-                Lighting.Brightness = 0.3
-            end
-        end
-    end
-end)
-
--- ============================================================
---  FOOTSTEP SOUNDS & AREA DETECTION
--- ============================================================
-local stepAccum = 0
-local lastArea = "backrooms"
-
-RunService.Heartbeat:Connect(function(dt)
-    if not State.inBackrooms then return end
-    
-    -- Area Detection
-    local px, pz = rootPart.Position.X, rootPart.Position.Z
-    local cx = math.floor(px / CFG.ChunkSize)
-    local cz = math.floor(pz / CFG.ChunkSize)
-    local key = cx .. ":" .. cz
-    local currentType = State.chunkTypes[key] or "backrooms"
-
-    if currentType ~= lastArea then
-        lastArea = currentType
-        if currentType == "pool" then
-            State.inPoolRooms = true
-            State.inHabitable = false
-            applyPoolRoomsLighting()
-            setAmbient(SOUNDS.PoolRoomsAmbient)
-            slideToast("The PoolRooms", 4)
-        elseif currentType == "habitable" then
-            State.inPoolRooms = false
-            State.inHabitable = true
-            applyHabitableLighting()
-            setAmbient(SOUNDS.BackroomsAmbient) -- Or a specific habitable sound
-            slideToast("Habitable Zone", 4)
-        else
-            State.inPoolRooms = false
-            State.inHabitable = false
-            applyBackroomsLighting()
-            setAmbient(SOUNDS.BackroomsAmbient)
-            slideToast("The Backrooms", 3)
-        end
-    end
-
-    -- Footsteps
-    local speed = humanoid and humanoid.MoveDirection.Magnitude or 0
-    if speed > 0.1 then
-        stepAccum = stepAccum + dt
-        if stepAccum >= 0.45 then
-            stepAccum = 0
-            local id = State.inPoolRooms and SOUNDS.PoolRoomsStep or SOUNDS.BackroomsStep
-            local s = playSound(id, rootPart, 3, false)
-            s.RollOffMaxDistance = 40
-        end
-    end
-end)
-
--- ============================================================
---  AMBIENT SOUND MANAGER
--- ============================================================
-local ambientSound = nil
-function setAmbient(id)
-    if ambientSound then ambientSound:Destroy() end
-    ambientSound = playSound(id, Workspace, 1.5, true)
-end
-
--- ============================================================
---  WALL-BUMP DETECTION (50% chance noclip)
--- ============================================================
-local lastPos = rootPart.Position
-local bumpTimer = 0
-
-RunService.Heartbeat:Connect(function(dt)
-    if State.transitioning or State.inBackrooms then
-        lastPos = rootPart.Position
-        return
-    end
-    local moved = (rootPart.Position - lastPos).Magnitude
-    lastPos = rootPart.Position
-
-    local trying = humanoid and humanoid.MoveDirection.Magnitude > 0.1
-    if trying and moved < 0.05 then
-        bumpTimer = bumpTimer + dt
-        if bumpTimer > 0.15 then
-            bumpTimer = 0
-            if chance(CFG.NoclipChanceWall) then
-                triggerNoclip()
-            end
-        end
-    else
-        bumpTimer = 0
-    end
-end)
-
--- ============================================================
---  RANDOM NOCLIP TIMER
--- ============================================================
+--------------------------------------------------------------------------------
+-- NCLIP TRIGGER & STEPPED LOGIC (Every 1s: 0.1 chance, Wall collision: 50% chance)
+--------------------------------------------------------------------------------
 task.spawn(function()
     while true do
         task.wait(1)
-        if not State.inBackrooms and not State.transitioning then
-            if chance(CFG.NoclipChancePerSecond) then
-                triggerNoclip()
+        if not isInBackrooms and not isInPoolrooms and not isInHabitableZone then
+            -- 0.1% chance every second to noclip through floor
+            if math.random(1, 1000) == 1 then
+                triggerNoclipTransition()
             end
         end
     end
 end)
 
--- ============================================================
---  NOCLIP SEQUENCE
--- ============================================================
-function triggerNoclip()
-    if State.transitioning then return end
-    State.transitioning = true
-    State.originalPos = rootPart.CFrame
-
-    playSound(SOUNDS.Noclip, Workspace, 1.2, false)
-
-    -- Turn off collision under player's feet
-    task.spawn(function()
-        for _, p in ipairs(char:GetDescendants()) do
-            if p:IsA("BasePart") then p.CanCollide = false end
+-- Wall Collision Check
+humanoidRootPart.Touched:Connect(function(hit)
+    if not isInBackrooms and not isInPoolrooms and not isInHabitableZone then
+        if hit and hit.CanCollide and not hit:IsDescendantOf(character) then
+            -- Turn CanCollide off for the specific part stepped on or hit
+            hit.CanCollide = false
+            if math.random() <= 0.5 then
+                triggerNoclipTransition()
+            end
         end
-        task.wait(1.5)
-        for _, p in ipairs(char:GetDescendants()) do
-            if p:IsA("BasePart") then p.CanCollide = true end
-        end
-    end)
+    end
+end)
 
-    -- Black screen + VHS
-    overlay.BackgroundTransparency = 1
-    overlay.Visible = true
-    vhsActive = true
-    fadeOverlay(0, 1.2)
-
-    task.wait(1.2)
-    showText(pixelText, "BACKROOMS", 0.8, 0.42)
+function triggerNoclipTransition()
+    local noclipSound = Instance.new("Sound")
+    noclipSound.SoundId = "rbxassetid://" .. SOUND_NOCLIP
+    noclipSound.Volume = 2
+    noclipSound.Parent = SoundService
+    noclipSound:Play()
+    
+    -- Black screen with realistic VHS effect
+    blackScreen.BackgroundTransparency = 0
+    
     task.wait(3)
-    showText(subText, "Produced By Hecker", 0.8, 0.56)
+    centerText.Text = "BACKROOMS"
+    centerText.TextTransparency = 0
+    
+    task.wait(3)
+    subText.Text = "Produced By Hecker"
+    subText.TextTransparency = 0
+    
     task.wait(5)
-
-    hideText(pixelText, 0.01)
-    hideText(subText, 0.01)
-    overlay.BackgroundTransparency = 1
-    vhsActive = true -- Keep VHS active in the backrooms
-
-    enterBackrooms()
-    State.transitioning = false
+    centerText.TextTransparency = 1
+    subText.TextTransparency = 1
+    blackScreen.BackgroundTransparency = 1
+    
+    createProceduralBackrooms()
 end
 
--- ============================================================
---  ENTER BACKROOMS
--- ============================================================
-function enterBackrooms()
-    State.inBackrooms = true
-    State.inPoolRooms = false
-    State.inHabitable = false
-
-    applyBackroomsLighting()
-    setAmbient(SOUNDS.BackroomsAmbient)
-
-    local spawnPos = Vector3.new(5000, 5, 5000)
-    rootPart.CFrame = CFrame.new(spawnPos)
-
-    State.generatedChunks = {}
-    State.chunkTypes = {}
-    lastChunkKey = ""
-    updateChunks()
-
-    slideToast("Backrooms Has Been Loaded. Goodluck Wanderer", 5)
-end
-
--- ============================================================
---  FLASHLIGHT
--- ============================================================
-local flashlight = Instance.new("SpotLight")
-flashlight.Brightness = 3
-flashlight.Range = 90
-flashlight.Angle = 60
-flashlight.Face = Enum.NormalId.Front
-flashlight.Enabled = false
-flashlight.Parent = camera
-
-UserInputService.InputBegan:Connect(function(input, gp)
-    if gp then return end
-    if input.KeyCode == Enum.KeyCode.F then
-        State.flashOn = not State.flashOn
-        flashlight.Enabled = State.flashOn
-        playSound(SOUNDS.Flashlight, Workspace, 1)
+--------------------------------------------------------------------------------
+-- FLASHLIGHT TOGGLE BUTTON & FOOTSTEP AUDIO EMITTER
+--------------------------------------------------------------------------------
+flashlightBtn.MouseButton1Click:Connect(function()
+    flashlightOn = not flashlightOn
+    local fsSound = Instance.new("Sound", SoundService)
+    fsSound.SoundId = "rbxassetid://" .. SOUND_FLASHLIGHT
+    fsSound.PlayOnRemove = true
+    fsSound:Destroy()
+    
+    if flashlightOn then
+        flashlight0 = Instance.new("SpotLight")
+        flashlight0.Brightness = 3
+        flashlight0.Range = 40
+        flashlight0.Angle = 60
+        flashlight0.Color = Color3.fromRGB(255, 255, 240)
+        flashlight0.Parent = cam
+        flashlight0.Name = "UserFlashlight"
+        flashlight0.Enabled = true
+        flashlightBtn.Text = "Close Flashlight"
+    else
+        if cam:FindFirstChild("UserFlashlight") then
+            cam.UserFlashlight:Destroy()
+        end
+        flashlightBtn.Text = "Open Flashlight"
     end
 end)
 
--- ============================================================
---  DOOR INTERACTION (Exit & Enter)
--- ============================================================
-local function attachDoorPrompt(model)
-    local primary = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
-    if not primary then return end
-    
-    local prompt = Instance.new("ProximityPrompt")
-    prompt.ActionText = "Open Door"
-    prompt.ObjectText = "Door"
-    prompt.MaxActivationDistance = 10
-    prompt.RequiresLineOfSight = false
-    prompt.Parent = primary
-    
-    prompt.Triggered:Connect(function()
-        playSound(SOUNDS.DoorOpen, Workspace, 1.5)
-        
-        -- Check if it's an exit door (random chance or specific model)
-        if chance(0.3) then -- 30% chance this door is an exit
-            slideToast("Exiting Backrooms...", 3)
-            task.wait(1)
-            restoreLighting()
-            if State.originalPos then
-                rootPart.CFrame = State.originalPos
-            else
-                rootPart.CFrame = CFrame.new(0, 5, 0)
+-- Footstep Sound Emitter based on active dimension
+local lastFootstep = tick()
+RunService.Stepped:Connect(function()
+    if character and character:FindFirstChild("Humanoid") then
+        local speed = character.Humanoid.MoveDirection.Magnitude
+        if speed > 0 and (tick() - lastFootstep > 0.4) then
+            lastFootstep = tick()
+            local walkSound = Instance.new("Sound", SoundService)
+            walkSound.Volume = 3 -- Made louder as requested
+            if isInBackrooms then
+                walkSound.SoundId = "rbxassetid://" .. SOUND_WALK_BACKROOMS
+            elseif isInPoolrooms then
+                walkSound.SoundId = "rbxassetid://" .. SOUND_WALK_POOLROOMS
+            elseif isInHabitableZone then
+                walkSound.SoundId = "rbxassetid://" .. SOUND_WALK_BACKROOMS
             end
-            State.inBackrooms = false
-            vhsActive = false
-            overlay.Visible = false
-            if ambientSound then ambientSound:Destroy() end
-        else
-            -- Teleport to a new location within the backrooms
-            local nx = rootPart.Position.X + rng(-200, 200)
-            local nz = rootPart.Position.Z + rng(-200, 200)
-            rootPart.CFrame = CFrame.new(nx, 5, nz)
-            State.generatedChunks = {}
-            State.chunkTypes = {}
-            lastChunkKey = ""
+            if walkSound.SoundId ~= "" then
+                walkSound.PlayOnRemove = true
+                walkSound:Destroy()
+            end
         end
-    end)
-end
+    end
+end)
 
+-- Random spawn chance for Poolrooms (20% chance or via Arrow/Escalator/Door)
 task.spawn(function()
     while true do
-        task.wait(2)
-        for _, f in ipairs(backroomsFolder:GetChildren() or {}) do
-            for _, m in ipairs(f:GetChildren()) do
-                if m:IsA("Model") and not m:GetAttribute("PromptAttached") then
-                    local ok = pcall(attachDoorPrompt, m)
-                    if ok then m:SetAttribute("PromptAttached", true) end
-                end
-            end
+        task.wait(60)
+        if isInBackrooms and math.random(1, 100) <= 20 then
+            enterPoolrooms()
         end
     end
 end)
-
--- ============================================================
---  CHUNK UPDATE LOOP
--- ============================================================
-RunService.Heartbeat:Connect(function()
-    if State.inBackrooms then
-        updateChunks()
-    end
-end)
-
--- ============================================================
---  INITIAL TOAST
--- ============================================================
-slideToast("Script Loaded. Goodluck Wanderer", 3)
