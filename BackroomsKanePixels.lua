@@ -37,7 +37,6 @@ local isInBackrooms = false
 local isInPoolrooms = false
 local isInHabitableZone = false
 local flashlightOn = false
-local currentDimension = "Normal"
 
 --------------------------------------------------------------------------------
 -- UI SETUP (VHS, CRT, Text, Flashlight Button)
@@ -149,7 +148,7 @@ local function showSlidingText(mainMsg, subMsg, duration)
 end
 
 --------------------------------------------------------------------------------
-WORLD GENERATION: BACKROOMS, POOLROOMS, HABITABLE ZONE
+-- WORLD GENERATION: BACKROOMS, POOLROOMS, HABITABLE ZONE
 --------------------------------------------------------------------------------
 local backroomsFolder = Instance.new("Folder")
 backroomsFolder.Name = "BackroomsDimension"
@@ -157,16 +156,13 @@ backroomsFolder.Parent = workspace
 
 local function createProceduralBackrooms()
     isInBackrooms = true
-    currentDimension = "Backrooms"
     flashlightBtn.Visible = true
     
-    -- Change Environment Lighting
     Lighting.Brightness = 1.2
     Lighting.ClockTime = 0
     Lighting.FogColor = Color3.fromRGB(180, 160, 100)
     Lighting.FogEnd = 150
     
-    -- Play Ambient Sound
     local ambientSound = Instance.new("Sound")
     ambientSound.SoundId = "rbxassetid://" .. SOUND_BACKROOMS_AMBIENT
     ambientSound.Looped = true
@@ -174,13 +170,11 @@ local function createProceduralBackrooms()
     ambientSound.Parent = SoundService
     ambientSound:Play()
     
-    -- Build Infinite Maze / Rooms (Open spaced + small corridors + square holes + 8 floors)
     local origin = Vector3.new(0, -500, 0)
     
     for floor = 0, 7 do
         local floorY = origin.Y + (floor * 12)
         
-        -- Floor & Ceiling (No fabric, non-colliding outer walls except necessary corridors)
         for x = -5, 5 do
             for z = -5, 5 do
                 local chunk = Instance.new("Part")
@@ -191,22 +185,19 @@ local function createProceduralBackrooms()
                 chunk.Color = Color3.fromRGB(210, 190, 110)
                 chunk.Parent = backroomsFolder
                 
-                -- Carpet texture
                 local surfaceTex = Instance.new("Texture")
                 surfaceTex.Texture = TEXTURE_BACKROOMS_WALL
                 surfaceTex.Face = Enum.NormalId.Top
                 surfaceTex.Parent = chunk
                 
-                -- Ceiling
                 local ceiling = Instance.new("Part")
-                ceiling.Size = Vector3.new(40, 1, floorY + 11)
+                ceiling.Size = Vector3.new(40, 1, 40)
                 ceiling.Position = origin + Vector3.new(x * 40, floorY + 11, z * 40)
                 ceiling.Anchored = true
                 ceiling.Material = Enum.Material.SmoothPlastic
                 ceiling.Color = Color3.fromRGB(230, 220, 150)
                 ceiling.Parent = backroomsFolder
                 
-                -- Square lights (square shape, low brightness style)
                 if math.random() > 0.3 then
                     local lightPart = Instance.new("Part")
                     lightPart.Size = Vector3.new(4, 0.2, 4)
@@ -226,19 +217,16 @@ local function createProceduralBackrooms()
         end
     end
     
-    -- Teleport Player
     humanoidRootPart.CFrame = CFrame.new(origin + Vector3.new(0, 2, 0))
-    
     showSlidingText("Backrooms Has Been Loaded.\nGoodluck Wanderer", "", 3)
 end
 
--- Transition to Poolrooms
 local function enterPoolrooms()
     isInBackrooms = false
     isInPoolrooms = true
-    currentDimension = "Poolrooms"
     
-    SoundService:FindFirstChildOfClass("Sound"):Destroy()
+    local activeAmbient = SoundService:FindFirstChildOfClass("Sound")
+    if activeAmbient then activeAmbient:Destroy() end
     
     local poolSound = Instance.new("Sound")
     poolSound.SoundId = "rbxassetid://" .. SOUND_POOLROOMS_AMBIENT
@@ -256,7 +244,6 @@ local function enterPoolrooms()
     local poolOrigin = Vector3.new(0, -800, 0)
     humanoidRootPart.CFrame = CFrame.new(poolOrigin + Vector3.new(0, 5, 0))
     
-    -- Generate Poolrooms structure
     for x = -3, 3 do
         for z = -3, 3 do
             local tile = Instance.new("Part")
@@ -272,7 +259,6 @@ local function enterPoolrooms()
             tex.Face = Enum.NormalId.Top
             tex.Parent = tile
             
-            -- Swimming pool water area
             if math.random() > 0.4 then
                 local water = Instance.new("Part")
                 water.Size = Vector3.new(30, 2, 30)
@@ -288,12 +274,10 @@ local function enterPoolrooms()
     end
 end
 
--- Transition to Habitable Zone (Level 1)
 local function enterHabitableZone()
     isInPoolrooms = false
     isInBackrooms = false
     isInHabitableZone = true
-    currentDimension = "HabitableZone"
     
     showSlidingText("Habitable Zone", "Level 1", 3)
     
@@ -303,7 +287,6 @@ local function enterHabitableZone()
     
     humanoidRootPart.CFrame = CFrame.new(Vector3.new(0, -1000, 0))
     
-    -- Garage / Concrete structure with puddles
     for x = -4, 4 do
         for z = -4, 4 do
             local floor = Instance.new("Part")
@@ -313,26 +296,16 @@ local function enterHabitableZone()
             floor.Material = Enum.Material.Concrete
             floor.Color = Color3.fromRGB(80, 80, 80)
             floor.Parent = backroomsFolder
-            
-            -- Water puddle
-            if math.random() > 0.5 then
-                local puddle = Instance.new("Part")
-                puddle.Size = Vector3.new(10, 0.05, 10)
-                puddle.Position = floor.Position + Vector3.new(math.random(-10, 10), 0.52, math.random(-10, 10))
-                puddle.Anchored = true
-                puddle.Material = Enum.Material.SmoothPlastic
-                puddle.Color = Color3.fromRGB(30, 30, 30)
-                puddle.Transparency = 0.2
-                puddle.Parent = backroomsFolder
-            end
         end
     end
     
-    -- Habitable zone light blackout loop (every 20 seconds, shuts down for 20 seconds)
     task.spawn(function()
         while isInHabitableZone do
             task.wait(20)
-            SoundService:PlayLocalSound(Instance.new("Sound", SoundService, {SoundId = "rbxassetid://" .. SOUND_LIGHT_BLACKOUT}))
+            local blackoutSound = Instance.new("Sound")
+            blackoutSound.SoundId = "rbxassetid://" .. SOUND_LIGHT_BLACKOUT
+            blackoutSound.Parent = SoundService
+            blackoutSound:Play()
             Lighting.Brightness = 0
             task.wait(20)
             Lighting.Brightness = 0.4
@@ -341,41 +314,15 @@ local function enterHabitableZone()
 end
 
 --------------------------------------------------------------------------------
--- NCLIP TRIGGER & STEPPED LOGIC (Every 1s: 0.1 chance, Wall collision: 50% chance)
+-- NOCLIP TRIGGER & STEPPED LOGIC
 --------------------------------------------------------------------------------
-task.spawn(function()
-    while true do
-        task.wait(1)
-        if not isInBackrooms and not isInPoolrooms and not isInHabitableZone then
-            -- 0.1% chance every second to noclip through floor
-            if math.random(1, 1000) == 1 then
-                triggerNoclipTransition()
-            end
-        end
-    end
-end)
-
--- Wall Collision Check
-humanoidRootPart.Touched:Connect(function(hit)
-    if not isInBackrooms and not isInPoolrooms and not isInHabitableZone then
-        if hit and hit.CanCollide and not hit:IsDescendantOf(character) then
-            -- Turn CanCollide off for the specific part stepped on or hit
-            hit.CanCollide = false
-            if math.random() <= 0.5 then
-                triggerNoclipTransition()
-            end
-        end
-    end
-end)
-
-function triggerNoclipTransition()
+local function triggerNoclipTransition()
     local noclipSound = Instance.new("Sound")
     noclipSound.SoundId = "rbxassetid://" .. SOUND_NOCLIP
     noclipSound.Volume = 2
     noclipSound.Parent = SoundService
     noclipSound:Play()
     
-    -- Black screen with realistic VHS effect
     blackScreen.BackgroundTransparency = 0
     
     task.wait(3)
@@ -394,25 +341,46 @@ function triggerNoclipTransition()
     createProceduralBackrooms()
 end
 
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if not isInBackrooms and not isInPoolrooms and not isInHabitableZone then
+            if math.random(1, 1000) == 1 then
+                triggerNoclipTransition()
+            end
+        end
+    end
+end)
+
+humanoidRootPart.Touched:Connect(function(hit)
+    if not isInBackrooms and not isInPoolrooms and not isInHabitableZone then
+        if hit and hit.CanCollide and not hit:IsDescendantOf(character) then
+            hit.CanCollide = false
+            if math.random() <= 0.5 then
+                triggerNoclipTransition()
+            end
+        end
+    end
+end)
+
 --------------------------------------------------------------------------------
 -- FLASHLIGHT TOGGLE BUTTON & FOOTSTEP AUDIO EMITTER
 --------------------------------------------------------------------------------
 flashlightBtn.MouseButton1Click:Connect(function()
     flashlightOn = not flashlightOn
-    local fsSound = Instance.new("Sound", SoundService)
+    local fsSound = Instance.new("Sound")
     fsSound.SoundId = "rbxassetid://" .. SOUND_FLASHLIGHT
-    fsSound.PlayOnRemove = true
-    fsSound:Destroy()
+    fsSound.Parent = SoundService
+    fsSound:Play()
     
     if flashlightOn then
-        flashlight0 = Instance.new("SpotLight")
-        flashlight0.Brightness = 3
-        flashlight0.Range = 40
-        flashlight0.Angle = 60
-        flashlight0.Color = Color3.fromRGB(255, 255, 240)
-        flashlight0.Parent = cam
-        flashlight0.Name = "UserFlashlight"
-        flashlight0.Enabled = true
+        local userFl = Instance.new("SpotLight")
+        userFl.Brightness = 3
+        userFl.Range = 40
+        userFl.Angle = 60
+        userFl.Color = Color3.fromRGB(255, 255, 240)
+        userFl.Parent = cam
+        userFl.Name = "UserFlashlight"
         flashlightBtn.Text = "Close Flashlight"
     else
         if cam:FindFirstChild("UserFlashlight") then
@@ -422,15 +390,14 @@ flashlightBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- Footstep Sound Emitter based on active dimension
 local lastFootstep = tick()
 RunService.Stepped:Connect(function()
     if character and character:FindFirstChild("Humanoid") then
         local speed = character.Humanoid.MoveDirection.Magnitude
         if speed > 0 and (tick() - lastFootstep > 0.4) then
             lastFootstep = tick()
-            local walkSound = Instance.new("Sound", SoundService)
-            walkSound.Volume = 3 -- Made louder as requested
+            local walkSound = Instance.new("Sound")
+            walkSound.Volume = 3
             if isInBackrooms then
                 walkSound.SoundId = "rbxassetid://" .. SOUND_WALK_BACKROOMS
             elseif isInPoolrooms then
@@ -439,14 +406,14 @@ RunService.Stepped:Connect(function()
                 walkSound.SoundId = "rbxassetid://" .. SOUND_WALK_BACKROOMS
             end
             if walkSound.SoundId ~= "" then
-                walkSound.PlayOnRemove = true
-                walkSound:Destroy()
+                walkSound.Parent = SoundService
+                walkSound:Play()
+                game.Debris:AddItem(walkSound, 2)
             end
         end
     end
 end)
 
--- Random spawn chance for Poolrooms (20% chance or via Arrow/Escalator/Door)
 task.spawn(function()
     while true do
         task.wait(60)
